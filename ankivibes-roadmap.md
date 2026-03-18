@@ -22,6 +22,7 @@ When you pick this back up, follow these steps before opening Claude:
    Give it this opening prompt:
    > Read `ankivibes-roadmap.md`. Implement Phase 1 exactly as described.
    > Do not begin Phase 2 until I tell you to.
+   > *(Phases 1 and 2 are already complete — see ✓ markers.)*
 
 4. **Work one phase at a time.** Verify the testable milestones at the end of
    each phase before moving on. The "Verifiable" block at the end of each phase
@@ -183,7 +184,7 @@ uv run pytest                  # all tests pass
 
 ---
 
-## Phase 2 — Ingest Pipeline
+## Phase 2 — Ingest Pipeline ✓
 
 **Goal:** `ankivibes ingest` reads a plaintext word list, lemmatizes each word,
 scores it by corpus frequency, and saves results to JSONL storage. `ankivibes
@@ -263,13 +264,28 @@ schema_version — integer, incremented on breaking changes
   - Schema version written to metadata line
 - Integration test: ingest a 10-word fixture file, assert store has expected entries
 
+### Implementation notes
+
+- `es_core_news_sm` installed via `python -m spacy download` (requires pip in
+  venv: `uv pip install pip`). Model is a direct dependency in `pyproject.toml`
+  via the official spaCy release URL.
+- Config writing (`save()`) is stubbed — deferred to Phase 3 when the contact
+  email prompt is needed. Reading uses stdlib `tomllib`.
+- `list` sorts by DP ascending (lower DP = more evenly distributed = more
+  common), so the most-used words appear first.
+- `tests/fixtures/corpus_sample.tsv` is a small hand-crafted TSV used in unit
+  tests so the full 33 MB CORPES file is never read during `pytest`.
+- `SpacyLemmatizer` tests are skipped automatically if `es_core_news_sm` is not
+  installed; all other tests use `FakeLemmatizer` or `DictLemmatizer` from
+  `conftest.py`.
+
 ### Verifiable
 
 ```sh
 uv run ankivibes ingest tests/fixtures/sample_words.txt
 uv run ankivibes list
 uv run ankivibes list --status needs_review
-uv run pytest                # all tests pass
+uv run pytest                # all tests pass (39 tests)
 ```
 
 ---
@@ -602,6 +618,12 @@ uv run pytest
 
 These are not in the v0 roadmap but worth noting for when the tool is working
 end-to-end.
+
+**Paginated `list` output.** Once the word store grows large, `ankivibes list`
+becomes unwieldy even with `--top N`. Consider adding pager support (e.g. piping
+through `less` via Rich's `Console(pager=True)` or `console.pager()`) or an
+interactive scrollable TUI view using a library like Textual. Defer until after
+the enrich pipeline is working and you have enough real words to feel the pain.
 
 **Richer card backs.** The Anki back field could include: pronunciation (IPA
 from Wiktionary), gender for nouns, conjugation table for common verbs. The
