@@ -24,6 +24,7 @@ class CORPESCorpus:
         self._data: dict[str, str] = {}
         self._load(tsv_path)
 
+    # TODO Evaluate this parse logic more thoroughly
     def _load(self, tsv_path: Path) -> None:
         best_freq: dict[str, float] = {}
         with tsv_path.open(encoding="utf-8", newline="") as fh:
