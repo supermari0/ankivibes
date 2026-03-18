@@ -1,0 +1,1 @@
+"""WordStore protocol definition."""

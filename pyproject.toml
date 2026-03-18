@@ -1,0 +1,27 @@
+[project]
+name = "ankivibes"
+version = "0.1.0"
+description = "CLI tool for Spanish vocabulary study with Anki integration"
+readme = "README.md"
+authors = [
+    { name = "Mario Villaplana" }
+]
+license = "Apache-2.0"
+requires-python = ">=3.12"
+dependencies = [
+    "typer>=0.15.0",
+    "rich>=13.0.0",
+]
+
+[project.scripts]
+ankivibes = "ankivibes.cli:app"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-cov>=6.0.0",
+]
+
+[build-system]
+requires = ["uv_build>=0.9.18,<0.10.0"]
+build-backend = "uv_build"
