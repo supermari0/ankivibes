@@ -12,6 +12,7 @@ dependencies = [
     "typer>=0.15.0",
     "rich>=13.0.0",
     "spacy>=3.8.11",
+    "pytionary @ git+ssh://git@github.com/supermari0/pytionary.git",
 ]
 
 [project.scripts]

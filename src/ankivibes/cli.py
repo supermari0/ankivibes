@@ -15,7 +15,8 @@ from .corpus import CORPESCorpus
 from .lemmatizer import SpacyLemmatizer
 from .pipeline import ingest_words
 from .store.jsonl import JsonlStore
-from .store.models import STATUS_INSERTED, STATUS_NEEDS_REVIEW, STATUS_READY
+from .enrich import enrich_one, select_entries_to_enrich
+from .store.models import STATUS_ENRICHED, STATUS_INSERTED, STATUS_NEEDS_REVIEW, STATUS_READY
 
 app = typer.Typer(help="Spanish vocabulary study tool with Anki integration.")
 console = Console()
@@ -166,9 +167,55 @@ def review(
 
 
 @app.command()
-def enrich() -> None:
+def enrich(
+    store_path: Annotated[Optional[Path], typer.Option(help="Override default store path.")] = None,
+    force: Annotated[bool, typer.Option("--force", help="Re-fetch definitions for already-enriched entries.")] = False,
+    top: Annotated[Optional[int], typer.Option("--top", help="Only enrich the top N entries by frequency.")] = None,
+) -> None:
     """Enrich words with Wiktionary definitions."""
-    rprint("not yet implemented")
+    from pytionary import WiktionaryClient
+
+    cfg = cfg_module.load()
+
+    if cfg.contact_email is None:
+        rprint("Wiktionary requests require a contact email for the User-Agent header.")
+        cfg.contact_email = typer.prompt("Contact email")
+        cfg_module.save(cfg)
+        rprint(f"Saved to {cfg_module._CONFIG_PATH}")
+
+    effective_store = store_path or cfg.store_path
+    store = JsonlStore(effective_store)
+    client = WiktionaryClient(cfg.contact_email)
+
+    entries = select_entries_to_enrich(store, force=force, top_n=top)
+    if not entries:
+        rprint("[dim]No entries to enrich.[/dim]")
+        return
+
+    enriched_count = 0
+    skipped_count = 0
+    errors: list[tuple[str, str]] = []
+
+    from rich.progress import track
+
+    for entry in track(entries, description="Enriching..."):
+        outcome, error_msg = enrich_one(entry, client, store)
+        if outcome == "enriched":
+            enriched_count += 1
+        else:
+            skipped_count += 1
+            if error_msg:
+                errors.append((entry.lemma, error_msg))
+
+    table = Table(title="Enrichment Summary")
+    table.add_column("Outcome", style="bold")
+    table.add_column("Count", justify="right")
+    table.add_row("enriched", str(enriched_count), style="green")
+    table.add_row("skipped", str(skipped_count), style="yellow")
+    console.print(table)
+
+    for lemma, msg in errors:
+        rprint(f"  [yellow]Warning:[/yellow] {lemma}: {msg}")
 
 
 @app.command()

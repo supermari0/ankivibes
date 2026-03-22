@@ -7,6 +7,7 @@ name = "ankivibes"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "pytionary" },
     { name = "rich" },
     { name = "spacy" },
     { name = "typer" },
@@ -20,6 +21,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "pytionary", git = "ssh://git@github.com/supermari0/pytionary.git" },
     { name = "rich", specifier = ">=13.0.0" },
     { name = "spacy", specifier = ">=3.8.11" },
     { name = "typer", specifier = ">=0.15.0" },
@@ -756,6 +758,11 @@ sdist = { url = "https://files.pythonhosted.org/packages/5e/f7/c933acc76f5208b3b
 wheels = [
     { url = "https://files.pythonhosted.org/packages/ee/49/1377b49de7d0c1ce41292161ea0f721913fa8722c19fb9c1e3aa0367eecb/pytest_cov-7.0.0-py3-none-any.whl", hash = "sha256:3b8e9558b16cc1479da72058bdecf8073661c7f57f7d3c5f22a1c23507f2d861", size = 22424, upload-time = "2025-09-09T10:57:00.695Z" },
 ]
+
+[[package]]
+name = "pytionary"
+version = "0.1.0"
+source = { git = "ssh://git@github.com/supermari0/pytionary.git#f152ebd0af8b91c63071794aa65f191311483494" }
 
 [[package]]
 name = "requests"

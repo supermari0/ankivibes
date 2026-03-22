@@ -44,4 +44,10 @@ def load() -> Config:
 
 
 def save(cfg: Config) -> None:
-    raise NotImplementedError("Config writing requires tomli-w; implement in Phase 3.")
+    _CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    lines: list[str] = []
+    lines.append(f'store_path = "{cfg.store_path}"')
+    lines.append(f'corpus_path = "{cfg.corpus_path}"')
+    if cfg.contact_email is not None:
+        lines.append(f'contact_email = "{cfg.contact_email}"')
+    _CONFIG_PATH.write_text("\n".join(lines) + "\n", encoding="utf-8")

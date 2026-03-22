@@ -8,7 +8,9 @@ from typer.testing import CliRunner
 
 from ankivibes.cli import app
 from ankivibes.store.jsonl import JsonlStore
-from ankivibes.store.models import STATUS_INSERTED, STATUS_READY, WordEntry
+from unittest.mock import MagicMock, patch
+
+from ankivibes.store.models import STATUS_ENRICHED, STATUS_INSERTED, STATUS_READY, WordEntry
 
 runner = CliRunner()
 
@@ -94,10 +96,79 @@ def test_review_no_entries(tmp_path):
     assert "No words need review" in result.output
 
 
-def test_enrich_stub():
-    result = runner.invoke(app, ["enrich"])
+CORRER_PAYLOAD = {
+    "es": [
+        {
+            "partOfSpeech": "Verb",
+            "definitions": [
+                {
+                    "definition": "to <b>run</b>",
+                    "parsedExamples": [
+                        {
+                            "example": "El niño corre por el parque.",
+                            "translation": "The child runs through the park.",
+                        }
+                    ],
+                }
+            ],
+        }
+    ]
+}
+
+
+def test_enrich_prompts_for_email(tmp_path):
+    """When no contact_email is configured, enrich prompts for one."""
+    store_path = tmp_path / "words.jsonl"
+    config_path = tmp_path / "config.toml"
+    store = JsonlStore(store_path)
+    store.save(WordEntry.create(
+        raw="correr", normalized="correr", lemma="correr",
+        frequency="0.015", status=STATUS_READY, reason=None, source="test",
+    ))
+
+    mock_client = MagicMock()
+    mock_client.fetch_definitions.return_value = CORRER_PAYLOAD
+
+    with (
+        patch("ankivibes.cli.cfg_module.load", return_value=MagicMock(
+            contact_email=None, store_path=store_path,
+        )),
+        patch("ankivibes.cli.cfg_module.save") as mock_save,
+        patch("ankivibes.cli.cfg_module._CONFIG_PATH", config_path),
+        patch("pytionary.WiktionaryClient", return_value=mock_client),
+    ):
+        result = runner.invoke(app, ["enrich"], input="test@example.com\n")
+
     assert result.exit_code == 0
-    assert "not yet implemented" in result.output
+    assert "Contact email" in result.output
+    mock_save.assert_called_once()
+
+
+def test_enrich_summary_output(tmp_path):
+    """Enrich prints a summary table with enriched/skipped counts."""
+    store_path = tmp_path / "words.jsonl"
+    store = JsonlStore(store_path)
+    store.save(WordEntry.create(
+        raw="correr", normalized="correr", lemma="correr",
+        frequency="0.015", status=STATUS_READY, reason=None, source="test",
+    ))
+
+    mock_client = MagicMock()
+    mock_client.fetch_definitions.return_value = CORRER_PAYLOAD
+
+    with (
+        patch("ankivibes.cli.cfg_module.load", return_value=MagicMock(
+            contact_email="test@example.com", store_path=store_path,
+        )),
+        patch("pytionary.WiktionaryClient", return_value=mock_client),
+    ):
+        result = runner.invoke(app, ["enrich"])
+
+    assert result.exit_code == 0
+    assert "enriched" in result.output.lower()
+
+    saved = store.get(store.all()[0].id)
+    assert saved.status == STATUS_ENRICHED
 
 
 def test_anki_stub():

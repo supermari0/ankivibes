@@ -290,70 +290,52 @@ uv run pytest                # all tests pass (39 tests)
 
 ---
 
-## Phase 3 — Wiktionary Client (Separate Repository)
+## Phase 3a — pytionary Library (Separate Repository) ✓
 
-**Goal:** Extract, clean, and test the Wiktionary client into its own
-`wiktionary-client-py` repository, then import it into ankivibes as a
-dependency.
+**Goal:** Build and publish the Wiktionary REST client as a standalone library.
 
-NOTE: The files referenced here for the wiktionary client DO NOT YET EXIST in
-this project. They are in a separate repository at ~/code/pytionary.
+The library lives at `~/code/pytionary` and is published at
+`https://github.com/supermari0/pytionary`.
 
-### Why a Separate Repo
+### What was built
 
-The Wiktionary REST client is generic — it has nothing to do with Anki or
-Spanish. Extracting it now forces a clean interface, makes it independently
-testable, and positions it for potential open-source release. ankivibes
-imports it like any other library.
+- `src/pytionary/` package (zero external dependencies, stdlib only):
+  - `client.py` — `WiktionaryClient` with configurable rate limiting (default
+    10 req/s via `time.monotonic`), 429 retry with `Retry-After` header, and
+    proper User-Agent (`pytionary/0.1.0 (url; email)`)
+  - `parser.py` — `parse_spanish_definitions()` extracts definitions from the
+    Wiktionary REST API JSON response, strips HTML, parses examples with
+    translations
+  - `models.py` — `Definition`, `Example` (frozen dataclasses, generic names),
+    `ClientError` (frozen dataclass + Exception)
+  - `_version.py` — single source of truth for version string
+- `contact_email` required at construction — Wikimedia needs a real contact
+  address in the User-Agent
+- Rate limiting note: Wiktionary/Wikimedia rate-limit policies are not clearly
+  documented in one place; 10 req/s is a conservative default. README advises
+  lowering for batch jobs.
+- 42 unit tests (mocked HTTP via `unittest.mock.patch`, fixtures from real API
+  responses for "correr" and "ser"), 1 opt-in integration test
+  (`PYTIONARY_INTEGRATION=1`)
+- Apache 2.0 license, `uv`-based project with `uv_build` backend
 
-The library is named **pytionary**. While it starts as a Wiktionary REST
-client, the name and interface leave room to add other dictionary sources
-(e.g., RAE DLE, WordReference) later without a rename.
+---
 
-### `pytionary` Repository
+## Phase 3b — Add pytionary to ankivibes + `enrich` command
 
-**Deliverables:**
-
-- New repo: `pytionary`
-- `src/pytionary/` package:
-  - `client.py` — `WiktionaryClient` HTTP client with rate limiting and User-Agent configuration
-  - `parser.py` — parse JSON response into typed dataclasses
-  - `models.py` — `Definition`, `Example` dataclasses (named generically, not Wiktionary-specific)
-- Contact email injected at construction time (caller's responsibility)
-- User-Agent format: `ankivibes/0.1 (https://github.com/you/pytionary; contact@example.com)`
-- Rate limiting: ≤10 req/s (configurable), with `time.sleep` back-off
-- Proper retry on 429 with `Retry-After` header support
-- `pyproject.toml`, `uv.lock`, `README.md` explaining the API and usage
-
-**Testing for `pytionary`:**
-
-- Mock HTTP layer using `responses` or `pytest-httpx` — no real network in CI
-- Test fixtures: save real API response JSON for "correr", "ser", "por favor"
-  as test fixtures
-- Tests for `parser.py`:
-  - Parses Spanish definitions from fixture JSON
-  - Strips HTML from definition text
-  - Extracts examples and translations
-  - Handles missing/empty fields gracefully
-  - Returns empty list for words with no Spanish entry
-- Tests for `client.py`:
-  - User-Agent header is set correctly
-  - HTTP 404 raises a typed exception (not crashes)
-  - HTTP 429 triggers retry logic
-  - Rate limiting: second call is delayed appropriately
-- One optional integration test (skipped unless `PYTIONARY_INTEGRATION=1`):
-  fetches "correr" from the real API and asserts definitions are non-empty
+**Goal:** Wire pytionary into ankivibes as a dependency and implement the
+`ankivibes enrich` command.
 
 ### Adding to ankivibes
 
-Once the client repo is ready, add it to ankivibes' dependencies:
+Add pytionary to ankivibes' dependencies:
 
 ```toml
 # pyproject.toml
 [project]
 dependencies = [
   # Install directly from git until/unless published to PyPI:
-  "pytionary @ git+https://github.com/you/pytionary.git",
+  "pytionary @ git+https://github.com/supermari0/pytionary.git",
 ]
 ```
 
@@ -392,14 +374,23 @@ Then it proceeds to enrich:
 ### Verifiable
 
 ```sh
-# In wiktionary-client-py:
-uv run pytest
-
-# In ankivibes:
 uv run ankivibes enrich --top 5
 uv run ankivibes list --status enriched
 uv run pytest
 ```
+
+---
+
+## Manual Review Gate (blocks all later phases)
+
+Before proceeding with Phase 3.5 or any later phase, the user must:
+
+1. Inspect the `enrich` code and tests
+2. Run `ankivibes enrich` on a real input list (ingest first, then enrich)
+3. Verify enriched entries look correct via `ankivibes list --status enriched`
+4. Explicitly confirm the enrich command is working correctly
+
+Claude must not proceed with Phase 3.5 or later until this confirmation is given.
 
 ---
 
@@ -629,10 +620,32 @@ the enrich pipeline is working and you have enough real words to feel the pain.
 from Wiktionary), gender for nouns, conjugation table for common verbs. The
 Wiktionary parser would need extending.
 
-**Local LLM for example sentences.** If Wiktionary has no examples for a word,
-an offline model (e.g., Ollama running Llama 3 or Mistral on your M1) could
-generate them. Gate this behind a config flag and a check that Ollama is
-running locally. No API costs, no data leaving the machine.
+**Example sentences for words missing them.** Many Wiktionary entries have no
+examples (e.g., "caminar" returns 5 definitions but zero examples). This is a
+real gap — example sentences are some of the most valuable content on a flash
+card. Several approaches, from simplest to most involved:
+
+1. **Prompt during Anki insertion.** During the `ankivibes anki` review flow
+   (Phase 4), flag cards with missing examples and give the user a chance to
+   add them inline. Include a hint like: *"No examples found. Paste one, or
+   ask ChatGPT/Claude: 'Give me a simple Spanish sentence using caminar with
+   an English translation.'"* This costs nothing, requires no API keys, and
+   keeps the user in control.
+
+2. **Local LLM via Ollama.** If Ollama is running locally (e.g., Llama 3 or
+   Mistral on an M1 Mac), ankivibes could generate examples automatically.
+   Gate behind a config flag and a check that Ollama is reachable. No API
+   costs, no data leaving the machine. The prompt should request a short,
+   natural sentence at A2–B1 level with a literal English translation.
+
+3. **Cloud LLM API.** For users willing to use API tokens (OpenAI, Anthropic,
+   etc.), add an optional `--generate-examples` flag to `enrich` that fills
+   in missing examples via an API call. Require the user to set their own API
+   key in config. This is the most seamless UX but has a cost-per-word
+   tradeoff.
+
+Start with option 1 (zero cost, zero config) in Phase 4's insertion flow, and
+add LLM-based generation as a later enhancement.
 
 **Siri Shortcuts / iOS integration.** An iOS shortcut that appends a word to
 your Apple Note and optionally triggers an ingest on your Mac via SSH or a
