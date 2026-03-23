@@ -171,6 +171,65 @@ def test_enrich_summary_output(tmp_path):
     assert saved.status == STATUS_ENRICHED
 
 
+def _enriched_entry(lemma="correr", frequency="0.015"):
+    entry = WordEntry.create(
+        raw=lemma, normalized=lemma, lemma=lemma,
+        frequency=frequency, status=STATUS_ENRICHED, reason=None, source="test",
+    )
+    entry.pos = "Verb"
+    entry.definitions = [
+        {
+            "text": "to run",
+            "pos": "Verb",
+            "examples": [
+                {"text": "El niño corre.", "translation": "The child runs."}
+            ],
+        }
+    ]
+    return entry
+
+
+def test_show_displays_enriched_entry(tmp_path):
+    store_path = tmp_path / "words.jsonl"
+    store = JsonlStore(store_path)
+    store.save(_enriched_entry())
+
+    result = runner.invoke(app, ["show", "correr", "--store-path", str(store_path)])
+    assert result.exit_code == 0
+    assert "correr" in result.output
+    assert "Verb" in result.output
+    assert "to run" in result.output
+    assert "El niño corre." in result.output
+
+
+def test_show_unknown_lemma(tmp_path):
+    store_path = tmp_path / "words.jsonl"
+    result = runner.invoke(app, ["show", "nope", "--store-path", str(store_path)])
+    assert result.exit_code == 1
+    assert "No entry found" in result.output
+
+
+def test_edit_sets_edited_flag(tmp_path):
+    store_path = tmp_path / "words.jsonl"
+    store = JsonlStore(store_path)
+    store.save(_enriched_entry())
+
+    edited_text = "to run\n  El niño corre.\n  > The child runs.\n\nto sprint\n"
+
+    def fake_editor(args):
+        """Write edited content to the temp file the editor would open."""
+        Path(args[1]).write_text(edited_text, encoding="utf-8")
+        return MagicMock(returncode=0)
+
+    with patch.dict("os.environ", {"EDITOR": "fake-editor"}), \
+         patch("subprocess.run", side_effect=fake_editor):
+        result = runner.invoke(app, ["edit", "correr", "--store-path", str(store_path)])
+
+    assert result.exit_code == 0
+    saved = store.get(store.all()[0].id)
+    assert saved.edited is True
+
+
 def test_anki_stub():
     result = runner.invoke(app, ["anki"])
     assert result.exit_code == 0

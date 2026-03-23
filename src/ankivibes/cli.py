@@ -219,6 +219,110 @@ def enrich(
 
 
 @app.command()
+def show(
+    lemma: Annotated[str, typer.Argument(help="The lemma to look up.")],
+    store_path: Annotated[Optional[Path], typer.Option(help="Override default store path.")] = None,
+) -> None:
+    """Show full details for a word."""
+    from rich.panel import Panel
+    from rich.text import Text
+
+    cfg = cfg_module.load()
+    effective_store = store_path or cfg.store_path
+    store = JsonlStore(effective_store)
+
+    entry = next((e for e in store.all() if e.lemma == lemma), None)
+    if entry is None:
+        rprint(f"[red]Error:[/red] No entry found with lemma '{lemma}'")
+        raise typer.Exit(1)
+
+    # TODO: Update this to show the normalized word, too, so you can check that the ingest pipeline didn't
+    # do something weird.
+    body = Text()
+    body.append(f"Status: {entry.status}    POS: {entry.pos or '—'}    Edited: {'yes' if entry.edited else 'no'}\n")
+    body.append(f"Frequency (DP): {entry.frequency or '—'}\n")
+    body.append(f"Source: {entry.source}\n")
+
+    if entry.definitions:
+        body.append("\nDefinitions:\n")
+        for i, defn in enumerate(entry.definitions, 1):
+            body.append(f"  {i}. {defn.get('text', '—')}\n")
+            examples = defn.get("examples", [])
+            if examples:
+                for ex in examples:
+                    body.append(f'     "{ex.get("text", "")}"\n', style="italic")
+                    tr = ex.get("translation")
+                    if tr:
+                        body.append(f"     → {tr}\n", style="dim")
+            else:
+                body.append("     (no examples)\n", style="dim")
+    else:
+        body.append("\n(no definitions)\n", style="dim")
+
+    body.append(f"\nCreated: {entry.created_at}\n", style="dim")
+    body.append(f"Updated: {entry.updated_at}\n", style="dim")
+
+    console.print(Panel(body, title=entry.lemma, expand=False))
+
+
+@app.command()
+def edit(
+    lemma: Annotated[str, typer.Argument(help="The lemma to edit.")],
+    store_path: Annotated[Optional[Path], typer.Option(help="Override default store path.")] = None,
+) -> None:
+    """Edit definitions for a word in $EDITOR."""
+    import os
+    import subprocess
+    import tempfile
+    from datetime import datetime, timezone
+
+    from .editor import definitions_to_text, text_to_definitions
+
+    cfg = cfg_module.load()
+    effective_store = store_path or cfg.store_path
+    store = JsonlStore(effective_store)
+
+    entry = next((e for e in store.all() if e.lemma == lemma), None)
+    if entry is None:
+        rprint(f"[red]Error:[/red] No entry found with lemma '{lemma}'")
+        raise typer.Exit(1)
+
+    editor = os.environ.get("EDITOR") or os.environ.get("VISUAL")
+    if not editor:
+        rprint("[red]Error:[/red] $EDITOR is not set. Set it to your preferred text editor.")
+        raise typer.Exit(1)
+
+    original_text = definitions_to_text(entry.lemma, entry.pos, entry.definitions)
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", prefix=f"ankivibes_{lemma}_", delete=False) as f:
+        f.write(original_text)
+        tmp_path = f.name
+
+    try:
+        result = subprocess.run([editor, tmp_path])
+        if result.returncode != 0:
+            rprint("[red]Editor exited with an error.[/red]")
+            raise typer.Exit(1)
+
+        edited_text = Path(tmp_path).read_text(encoding="utf-8")
+    finally:
+        Path(tmp_path).unlink(missing_ok=True)
+
+    if edited_text == original_text:
+        rprint("[dim]No changes made.[/dim]")
+        return
+
+    new_definitions = text_to_definitions(edited_text)
+    entry.definitions = new_definitions
+    if new_definitions and new_definitions[0].get("pos"):
+        entry.pos = new_definitions[0]["pos"]
+    entry.edited = True
+    entry.updated_at = datetime.now(timezone.utc).isoformat()
+    store.save(entry)
+    rprint(f"[green]Updated {lemma} with {len(new_definitions)} definition(s).[/green]")
+
+
+@app.command()
 def anki() -> None:
     """Review and insert cards into Anki."""
     rprint("not yet implemented")

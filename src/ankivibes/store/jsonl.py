@@ -57,6 +57,7 @@ class JsonlStore:
             created_at=d["created_at"],
             updated_at=d["updated_at"],
             schema_version=d.get("schema_version", SCHEMA_VERSION),
+            edited=d.get("edited", False),
         )
 
     def save(self, entry: WordEntry) -> None:

@@ -42,6 +42,7 @@ class WordEntry:
     created_at: str
     updated_at: str
     schema_version: int = field(default=SCHEMA_VERSION)
+    edited: bool = False
 
     @classmethod
     def create(

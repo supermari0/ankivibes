@@ -394,6 +394,50 @@ Claude must not proceed with Phase 3.5 or later until this confirmation is given
 
 ---
 
+## Phase 3c — Inspect and Edit Enriched Words ✓
+
+**Goal:** Make enriched data visible and editable. After enrichment, the user
+needs to see what definitions, POS, and examples were fetched, and fix or
+supplement them where Wiktionary data is incomplete.
+
+### `ankivibes show <lemma>`
+
+Displays a Rich panel with the full detail of a word entry: status, POS,
+frequency, source, all definitions with examples, timestamps, and whether
+the entry has been manually edited.
+
+- [ ] Also display `normalized` in the panel — useful for catching lemmatization
+  oddities (e.g., "viga" lemmatized to "ver"). Raw input is already stored, so
+  this is a one-line addition.
+- [ ] Consider a fuller `edit` experience beyond definitions: editing the lemma
+  itself (to correct bad lemmatization), the normalized form, or POS. UX needs
+  thought — likely a structured prompt or a YAML/TOML snippet in `$EDITOR`
+  covering all editable fields, with the current `edit` command's definition
+  format as a subset.
+
+### `ankivibes edit <lemma>`
+
+Opens the word's definitions in `$EDITOR` using a simple structured text
+format. On save, parses edits back into the store and sets `edited = True`
+on the entry. Requires `$EDITOR` to be set.
+
+### `edited` field on WordEntry
+
+A boolean field (`default False`) added to `WordEntry` to distinguish
+machine-enriched entries from human-touched ones. Backwards-compatible with
+existing JSONL data (missing field defaults to `False`).
+
+### Verifiable
+
+```sh
+uv run ankivibes show correr           # full detail panel
+uv run ankivibes edit correr           # opens in $EDITOR
+uv run ankivibes show correr           # verify edits, edited=yes
+uv run pytest                          # all tests pass (55 tests)
+```
+
+---
+
 ## Phase 3.5 — Static Type Checking
 
 - [ ] Add `mypy` or `pyright` as a dev dependency

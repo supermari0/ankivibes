@@ -111,6 +111,14 @@ def test_merge_preserves_created_at(tmp_store):
     assert merged.created_at == original_created
 
 
+def test_edited_field_defaults_false(tmp_store):
+    """Entries without an 'edited' field in JSONL deserialize with edited=False."""
+    entry = _make_entry()
+    tmp_store.save(entry)
+    loaded = tmp_store.get(entry.id)
+    assert loaded.edited is False
+
+
 def test_integration_ingest_fixture_file(tmp_store, tmp_path):
     """Integration test: ingest sample fixture, check store has expected entries."""
     corpus = CORPESCorpus(CORPUS_SAMPLE)
