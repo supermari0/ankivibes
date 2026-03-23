@@ -31,4 +31,5 @@ ankivibes anki          # Review and insert Anki cards
 uv sync                 # Install dependencies
 uv run pytest           # Run tests
 uv run pytest --cov     # Run tests with coverage
+uv run mypy src/        # Run static type checker
 ```

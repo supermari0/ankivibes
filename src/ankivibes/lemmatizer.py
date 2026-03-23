@@ -1,7 +1,7 @@
 """Lemmatizer protocol and SpacyLemmatizer implementation."""
 from __future__ import annotations
 
-from typing import Protocol
+from typing import Any, Protocol
 
 
 class Lemmatizer(Protocol):
@@ -14,9 +14,9 @@ class SpacyLemmatizer:
     """spaCy-based lemmatizer using es_core_news_sm."""
 
     def __init__(self) -> None:
-        self._nlp = None
+        self._nlp: Any = None
 
-    def _get_nlp(self):
+    def _get_nlp(self) -> Any:
         if self._nlp is None:
             import spacy
             self._nlp = spacy.load("es_core_news_sm")
@@ -27,4 +27,5 @@ class SpacyLemmatizer:
         doc = nlp(word)
         if not doc:
             return word
-        return doc[0].lemma_
+        result: str = doc[0].lemma_
+        return result

@@ -12,6 +12,7 @@ dependencies = [
     "typer>=0.15.0",
     "rich>=13.0.0",
     "spacy>=3.8.11",
+    "es-core-news-sm @ https://github.com/explosion/spacy-models/releases/download/es_core_news_sm-3.8.0/es_core_news_sm-3.8.0-py3-none-any.whl",
     "pytionary @ git+ssh://git@github.com/supermari0/pytionary.git",
 ]
 
@@ -22,7 +23,14 @@ ankivibes = "ankivibes.cli:app"
 dev = [
     "pytest>=8.0.0",
     "pytest-cov>=6.0.0",
+    "mypy>=1.10.0",
 ]
+
+[tool.mypy]
+python_version = "3.12"
+strict = false
+warn_return_any = true
+warn_unused_configs = true
 
 [build-system]
 requires = ["uv_build>=0.9.18,<0.10.0"]

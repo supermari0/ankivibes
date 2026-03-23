@@ -321,7 +321,7 @@ The library lives at `~/code/pytionary` and is published at
 
 ---
 
-## Phase 3b — Add pytionary to ankivibes + `enrich` command
+## Phase 3b — Add pytionary to ankivibes + `enrich` command ✓
 
 **Goal:** Wire pytionary into ankivibes as a dependency and implement the
 `ankivibes enrich` command.
