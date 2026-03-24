@@ -438,7 +438,7 @@ uv run pytest                          # all tests pass (55 tests)
 
 ---
 
-## Phase 3.5 — Static Type Checking
+## Phase 3.5 — Static Type Checking ✓
 
 - [ ] Add `mypy` or `pyright` as a dev dependency
 - [ ] Run the type checker across `src/` and fix any errors
@@ -447,20 +447,10 @@ uv run pytest                          # all tests pass (55 tests)
 
 ---
 
-## Phase 4 — Anki Integration
+## Phase 4 — Build Anki Cards
 
 **Goal:** `ankivibes anki` guides you through reviewing enriched cards and
 inserting them into your Anki deck.
-
-### `ankivibes ingest --anki-deck <file>`
-
-Extends ingest to read an existing Anki `.anki2` collection and mark any words
-already in the deck as `inserted` so they never appear in the ready queue.
-
-- Uses the `anki` library to open the collection read-only
-- Matches on the front field of cards (the Spanish lemma)
-- Writes `inserted` status to the JSONL store for matches
-- Safe: never writes to the Anki file in this step
 
 ### `ankivibes anki`
 
@@ -538,10 +528,82 @@ backup_dir = "~/.local/share/ankivibes/backups"
 ### Verifiable
 
 ```sh
-uv run ankivibes ingest words.txt --anki-deck ~/path/to/collection.anki2
 uv run ankivibes list --status enriched
 uv run ankivibes anki --dry-run   # preview without writing
 uv run ankivibes anki             # full interactive flow
+uv run pytest
+```
+
+---
+
+## Phase 4.5 — Ingest from Existing Anki Deck
+
+**Goal:** Bootstrap the ankivibes store from your existing Anki collection by
+marking words already in the deck as `inserted` so they never appear in the
+ready queue. This is a read-only operation against your Anki file.
+
+### Pre-implementation questions (Claude must ask these before starting)
+
+> **Stop.** Before implementing this phase, ask the user the following
+> questions and record their answers below:
+>
+> 1. **Collection format:** Is your Anki collection a `.anki2` file (direct
+>    SQLite), an `.apkg` export, or do you prefer to access it through
+>    AnkiConnect (HTTP API while Anki is running)?
+>
+> 2. **Deck scope:** Should ankivibes scan a single named deck, all decks, or
+>    a configurable list? Do you use subdecks (e.g., `Spanish::Verbs`) and
+>    should they be included?
+>
+> 3. **Match field:** What field on your existing cards holds the Spanish lemma
+>    — is it the "Front" field of a Basic note, or a custom note type with a
+>    different field name?
+>
+> 4. **Match strategy:** Should matching be exact (case-insensitive equality)
+>    or fuzzy (e.g., "correr" matches a card with front "Correr — to run")?
+>    What should happen if a card front contains more than just the lemma?
+>
+> 5. **Conflict handling:** If a word is already `enriched` in ankivibes but
+>    also exists in your Anki deck, should the scan overwrite its status to
+>    `inserted`, or leave enriched entries untouched so you can re-review them?
+>
+> 6. **One-time vs. recurring:** Is this a one-time bootstrap (run once to
+>    seed the store from your existing deck) or a recurring sync (re-run
+>    periodically to pick up cards added outside ankivibes)?
+
+### `ankivibes ingest --anki-deck <file>`
+
+- Uses the `anki` library to open the collection read-only
+- Matches on the configured front field (exact strategy TBD per answers above)
+- Writes `inserted` status to the JSONL store for matches
+- Never writes to the Anki file in this step
+- Prints a summary: N words found in deck, M matched to store entries, K new
+  entries created for deck words not yet in the store
+
+### Configuration
+
+```toml
+[anki]
+collection_path = "/Users/you/Library/Application Support/Anki2/User 1/collection.anki2"
+deck_name = "Spanish"        # deck(s) to scan; "*" for all
+front_field = "Front"        # field to match against
+```
+
+### Testing
+
+- Unit tests using a minimal fixture `.anki2` file (created via the `anki`
+  library's test utilities)
+- Assert that matched words get `inserted` status
+- Assert that unmatched words are unaffected
+- Assert the command is idempotent (running twice has the same result)
+- Integration test: ingest a word list, scan a fixture deck containing some
+  of those words, assert the overlapping words become `inserted`
+
+### Verifiable
+
+```sh
+uv run ankivibes ingest words.txt --anki-deck ~/path/to/collection.anki2
+uv run ankivibes list --status inserted
 uv run pytest
 ```
 
