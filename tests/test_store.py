@@ -119,6 +119,29 @@ def test_edited_field_defaults_false(tmp_store):
     assert loaded.edited is False
 
 
+def test_anki_fields_backwards_compatible(tmp_path):
+    """Old JSONL data without anki_note_id/last_synced_at loads with None defaults."""
+    store = JsonlStore(tmp_path / "words.jsonl")
+    entry = _make_entry()
+    store.save(entry)
+
+    # Manually strip the new fields from the JSONL to simulate old data
+    raw = store._path.read_text(encoding="utf-8")
+    lines = raw.splitlines()
+    cleaned = []
+    for line in lines:
+        d = json.loads(line)
+        d.pop("anki_note_id", None)
+        d.pop("last_synced_at", None)
+        cleaned.append(json.dumps(d))
+    store._path.write_text("\n".join(cleaned) + "\n", encoding="utf-8")
+
+    loaded = store.get(entry.id)
+    assert loaded is not None
+    assert loaded.anki_note_id is None
+    assert loaded.last_synced_at is None
+
+
 def test_integration_ingest_fixture_file(tmp_store, tmp_path):
     """Integration test: ingest sample fixture, check store has expected entries."""
     corpus = CORPESCorpus(CORPUS_SAMPLE)

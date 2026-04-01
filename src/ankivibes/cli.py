@@ -16,7 +16,7 @@ from .lemmatizer import SpacyLemmatizer
 from .pipeline import ingest_words
 from .store.jsonl import JsonlStore
 from .enrich import enrich_one, select_entries_to_enrich
-from .store.models import STATUS_ENRICHED, STATUS_INSERTED, STATUS_NEEDS_REVIEW, STATUS_READY
+from .store.models import STATUS_ENRICHED, STATUS_INSERTED, STATUS_NEEDS_REVIEW, STATUS_READY, WordEntry
 
 app = typer.Typer(help="Spanish vocabulary study tool with Anki integration.")
 console = Console()
@@ -323,6 +323,151 @@ def edit(
 
 
 @app.command()
-def anki() -> None:
+def anki(
+    dry_run: Annotated[bool, typer.Option("--dry-run", help="Preview cards without writing to Anki.")] = False,
+    store_path: Annotated[Optional[Path], typer.Option(help="Override default store path.")] = None,
+) -> None:
     """Review and insert cards into Anki."""
-    rprint("not yet implemented")
+    import os
+    import subprocess
+    import tempfile
+    from datetime import datetime, timezone
+
+    import click
+
+    from .anki_bridge import (
+        check_collection_locked,
+        format_card_preview,
+        insert_staged_notes,
+        select_entries_for_anki,
+    )
+    from .editor import definitions_to_text, text_to_definitions
+
+    cfg = cfg_module.load()
+    effective_store = store_path or cfg.store_path
+    store = JsonlStore(effective_store)
+
+    entries = select_entries_for_anki(store)
+    if not entries:
+        rprint("[dim]No enriched entries to review.[/dim]")
+        return
+
+    # Prompt for collection_path if not configured (only after confirming there's work)
+    if not dry_run:
+        if cfg.anki.collection_path is None:
+            rprint("Anki collection path is not configured.")
+            path_str = typer.prompt("Path to your .anki2 file")
+            cfg.anki.collection_path = Path(path_str).expanduser()
+            cfg_module.save(cfg)
+            rprint(f"Saved to {cfg_module._CONFIG_PATH}")
+
+        collection_path = cfg.anki.collection_path
+        assert collection_path is not None
+
+        if not collection_path.exists():
+            rprint(f"[yellow]Note:[/yellow] {collection_path} does not exist — a new collection will be created.")
+
+        if check_collection_locked(collection_path):
+            rprint("[red]Error:[/red] Anki appears to be open (collection is locked).")
+            rprint("Close Anki before inserting cards.")
+            raise typer.Exit(1)
+
+    # Interactive review loop
+    staged: list[WordEntry] = []
+    skipped = 0
+    total = len(entries)
+
+    for i, entry in enumerate(entries, 1):
+        console.print(format_card_preview(entry, i, total))
+        while True:
+            rprint("[dim]  Press a/e/s/q: [/dim]", end="")
+            ch = click.getchar()
+            rprint()  # newline after keypress
+            if ch in ("a", "A"):
+                staged.append(entry)
+                rprint(f"  [green]Accepted[/green] {entry.lemma}")
+                break
+            elif ch in ("e", "E"):
+                # Edit flow — reuse editor module
+                editor_cmd = os.environ.get("EDITOR") or os.environ.get("VISUAL")
+                if not editor_cmd:
+                    rprint("  [yellow]$EDITOR not set — skipping edit.[/yellow]")
+                    continue
+                original_text = definitions_to_text(entry.lemma, entry.pos, entry.definitions)
+                with tempfile.NamedTemporaryFile(
+                    mode="w", suffix=".txt", prefix=f"ankivibes_{entry.lemma}_", delete=False
+                ) as f:
+                    f.write(original_text)
+                    tmp_path = f.name
+                try:
+                    result = subprocess.run([editor_cmd, tmp_path])
+                    if result.returncode != 0:
+                        rprint("  [red]Editor exited with an error.[/red]")
+                        continue
+                    edited_text = Path(tmp_path).read_text(encoding="utf-8")
+                finally:
+                    Path(tmp_path).unlink(missing_ok=True)
+                if edited_text != original_text:
+                    new_defs = text_to_definitions(edited_text)
+                    entry.definitions = new_defs
+                    if new_defs and new_defs[0].get("pos"):
+                        entry.pos = new_defs[0]["pos"]
+                    entry.edited = True
+                    entry.updated_at = datetime.now(timezone.utc).isoformat()
+                    store.save(entry)
+                    rprint(f"  [green]Updated definitions for {entry.lemma}[/green]")
+                # Re-display after edit
+                console.print(format_card_preview(entry, i, total))
+            elif ch in ("s", "S"):
+                skipped += 1
+                rprint(f"  [dim]Skipped[/dim] {entry.lemma}")
+                break
+            elif ch in ("q", "Q"):
+                rprint("  Quitting review.")
+                break
+            else:
+                rprint("  [dim]Invalid key. Press a/e/s/q.[/dim]")
+                continue
+        if ch in ("q", "Q"):
+            break
+
+    # Summary
+    rprint()
+    summary = Table(title="Review Summary")
+    summary.add_column("Outcome", style="bold")
+    summary.add_column("Count", justify="right")
+    summary.add_row("staged", str(len(staged)), style="green")
+    summary.add_row("skipped", str(skipped), style="dim")
+    console.print(summary)
+
+    if not staged:
+        return
+
+    if dry_run:
+        rprint("[dim]Dry run — no changes written to Anki.[/dim]")
+        return
+
+    # Confirm insertion
+    if not typer.confirm(f"Insert {len(staged)} cards into your Anki deck?", default=False):
+        rprint("[dim]Cancelled.[/dim]")
+        return
+
+    # Insert
+    results = insert_staged_notes(
+        collection_path=collection_path,
+        deck_name=cfg.anki.deck_name,
+        entries=staged,
+        backup_dir=cfg.anki.backup_dir,
+    )
+
+    now = datetime.now(timezone.utc).isoformat()
+    for res in results:
+        res.entry.anki_note_id = res.anki_note_id
+        res.entry.last_synced_at = now
+        res.entry.status = STATUS_INSERTED
+        res.entry.updated_at = now
+        store.save(res.entry)
+
+    rprint(f"\n[green]Inserted {len(results)} card(s) into deck '{cfg.anki.deck_name}'.[/green]")
+    for res in results:
+        rprint(f"  {res.entry.lemma} → note {res.anki_note_id}")

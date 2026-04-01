@@ -58,6 +58,8 @@ class JsonlStore:
             updated_at=d["updated_at"],
             schema_version=d.get("schema_version", SCHEMA_VERSION),
             edited=d.get("edited", False),
+            anki_note_id=d.get("anki_note_id"),
+            last_synced_at=d.get("last_synced_at"),
         )
 
     def save(self, entry: WordEntry) -> None:

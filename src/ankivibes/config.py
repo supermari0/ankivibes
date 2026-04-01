@@ -22,10 +22,21 @@ def _default_corpus_path() -> Path:
 
 
 @dataclass
+class AnkiConfig:
+    collection_path: Path | None = None
+    deck_name: str = "Spanish"
+    backup_dir: Path = field(
+        default_factory=lambda: Path.home() / ".local" / "share" / "ankivibes" / "backups"
+    )
+    auto_sync: bool = True
+
+
+@dataclass
 class Config:
     store_path: Path = field(default_factory=lambda: DEFAULT_STORE_PATH)
     corpus_path: Path = field(default_factory=_default_corpus_path)
     contact_email: str | None = None
+    anki: AnkiConfig = field(default_factory=AnkiConfig)
 
 
 def load() -> Config:
@@ -40,6 +51,16 @@ def load() -> Config:
         cfg.corpus_path = Path(data["corpus_path"])
     if "contact_email" in data:
         cfg.contact_email = data["contact_email"]
+    if "anki" in data:
+        anki_data = data["anki"]
+        if "collection_path" in anki_data:
+            cfg.anki.collection_path = Path(anki_data["collection_path"])
+        if "deck_name" in anki_data:
+            cfg.anki.deck_name = anki_data["deck_name"]
+        if "backup_dir" in anki_data:
+            cfg.anki.backup_dir = Path(anki_data["backup_dir"])
+        if "auto_sync" in anki_data:
+            cfg.anki.auto_sync = anki_data["auto_sync"]
     return cfg
 
 
@@ -50,4 +71,11 @@ def save(cfg: Config) -> None:
     lines.append(f'corpus_path = "{cfg.corpus_path}"')
     if cfg.contact_email is not None:
         lines.append(f'contact_email = "{cfg.contact_email}"')
+    lines.append("")
+    lines.append("[anki]")
+    if cfg.anki.collection_path is not None:
+        lines.append(f'collection_path = "{cfg.anki.collection_path}"')
+    lines.append(f'deck_name = "{cfg.anki.deck_name}"')
+    lines.append(f'backup_dir = "{cfg.anki.backup_dir}"')
+    lines.append(f"auto_sync = {str(cfg.anki.auto_sync).lower()}")
     _CONFIG_PATH.write_text("\n".join(lines) + "\n", encoding="utf-8")

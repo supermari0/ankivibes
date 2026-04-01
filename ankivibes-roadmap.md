@@ -1,39 +1,5 @@
 # ankivibes — Project Roadmap
 
-## Getting Started
-
-When you pick this back up, follow these steps before opening Claude:
-
-1. **Create the repos:**
-   ```sh
-   mkdir ~/code/ankivibes && cd ~/code/ankivibes && git init
-   mkdir ~/code/pytionary && cd ~/code/pytionary && git init
-   ```
-
-2. **Copy assets into the new repos:**
-   ```sh
-   mkdir ~/code/ankivibes/data
-   cp ~/code/frelanki/ankivibes-roadmap.md ~/code/ankivibes/
-   cp ~/code/frelanki/diccionario_frecuencias_corpes_alfa.tsv ~/code/ankivibes/data/
-   cp ~/code/frelanki/src/frelanki/wiktionary/{client,parser,models}.py ~/code/pytionary/
-   ```
-
-3. **Open Claude Code on `~/code/ankivibes`** (not on frelanki — start fresh).
-   Give it this opening prompt:
-   > Read `ankivibes-roadmap.md`. Implement Phase 1 exactly as described.
-   > Do not begin Phase 2 until I tell you to.
-   > *(Phases 1 and 2 are already complete — see ✓ markers.)*
-
-4. **Work one phase at a time.** Verify the testable milestones at the end of
-   each phase before moving on. The "Verifiable" block at the end of each phase
-   tells you exactly what to run.
-
-5. **For pytionary**, open a separate Claude Code session on `~/code/pytionary`
-   when you reach Phase 3. Give it the Phase 3 section of this roadmap and the
-   frelanki source files you copied in step 2.
-
----
-
 ## Vision
 
 ankivibes is a personal CLI tool for Spanish vocabulary study. It ingests an
@@ -447,10 +413,49 @@ uv run pytest                          # all tests pass (55 tests)
 
 ---
 
-## Phase 4 — Build Anki Cards
+## Phase 4a — Anki Bridge Foundation & Card Export
 
-**Goal:** `ankivibes anki` guides you through reviewing enriched cards and
-inserting them into your Anki deck.
+**Goal:** Define the AnkiVibes note type, build card formatting and backup
+infrastructure, and implement the interactive review-and-insert flow via
+`ankivibes anki`. This is the **fresh deck** path — no existing cards to
+reconcile.
+
+### AnkiVibes Note Type
+
+ankivibes uses a custom Anki note type called `AnkiVibes` instead of the
+built-in `Basic` type. The custom type enables reliable sync by giving each
+note a dedicated `ankivibes_id` field.
+
+**Fields:**
+
+| Field | Purpose |
+|---|---|
+| `Front` | Spanish lemma (e.g., "correr") |
+| `Back` | Definitions and example sentences, formatted as HTML |
+| `ankivibes_id` | The stable `sha256[:16]` ID from the ankivibes store. Hidden from the card face but queryable for sync |
+
+**Card template:** The card template renders `Front` and `Back` identically to
+Anki's built-in Basic type — no visual difference when studying. The
+`ankivibes_id` field is not shown on either side of the card.
+
+**Tag:** Every note inserted by ankivibes gets an `ankivibes` tag. This makes
+it easy to filter ankivibes-managed cards in Anki's browser (`tag:ankivibes`
+or `note:AnkiVibes`).
+
+**Creation:** The `AnkiVibes` note type is created automatically on the first
+run of `ankivibes anki` if it doesn't already exist. No manual setup needed.
+
+### WordEntry Changes
+
+Add two new fields to `WordEntry`:
+
+- `anki_note_id` — `int | None`, the Anki note ID written back after
+  insertion. Used by sync to locate the note in the collection.
+- `last_synced_at` — `str | None`, ISO 8601 UTC timestamp of the last
+  successful sync for this entry. Used to detect staleness.
+
+These fields default to `None` and are backwards-compatible with existing
+JSONL data.
 
 ### `ankivibes anki`
 
@@ -459,8 +464,13 @@ the tool, so the UX matters.
 
 **Flow:**
 
-1. Load all `enriched` entries sorted by frequency descending
-2. For each card, display a Rich panel showing the card preview:
+1. **Auto-sync check** (enabled by default, see Phase 4c). Before showing the
+   review queue, scan all ankivibes-managed cards in Anki for drift against
+   the store. If drift is found, show a summary and offer to resolve before
+   proceeding. If no drift, proceed silently. Skipped if `auto_sync = false`
+   in config.
+2. Load all `enriched` entries sorted by frequency descending.
+3. For each card, display a Rich panel showing the card preview:
 
 ```
 ┌─────────────────────────────────────────────────┐
@@ -478,18 +488,20 @@ the tool, so the UX matters.
   [a] accept   [e] edit   [s] skip   [q] quit
 ```
 
-3. On `[e]dit`, open the card's back content in `$EDITOR` (or fall back to
+4. On `[e]dit`, open the card's back content in `$EDITOR` (or fall back to
    an inline Typer prompt if no editor is configured). Re-display the card
    after editing.
-4. On `[a]ccept`, stage the card for insertion (do not write to Anki yet).
-5. After the review loop ends (or `[q]`, or all cards reviewed):
+5. On `[a]ccept`, stage the card for insertion (do not write to Anki yet).
+6. After the review loop ends (or `[q]`, or all cards reviewed):
    - Show a summary: N cards staged, M skipped
    - Prompt: "Insert N cards into your Anki deck? [y/N]"
-6. If confirmed:
+7. If confirmed:
    - **Create a timestamped backup** of the `.anki2` file before touching it
    - Open the Anki collection using the `anki` library
-   - Insert staged notes into the target deck
-   - Mark inserted entries as `inserted` in the JSONL store
+   - Create the `AnkiVibes` note type if it doesn't exist
+   - Insert staged notes into the target deck with the `ankivibes` tag
+   - Write `anki_note_id` and `last_synced_at` back to the store
+   - Mark inserted entries as `inserted` in the store
    - Print confirmation with note IDs
 
 **Configuration** (in `config.toml`):
@@ -498,11 +510,13 @@ the tool, so the UX matters.
 [anki]
 collection_path = "/Users/you/Library/Application Support/Anki2/User 1/collection.anki2"
 deck_name = "Spanish"
-note_type = "Basic"
-front_field = "Front"
-back_field = "Back"
 backup_dir = "~/.local/share/ankivibes/backups"
+auto_sync = true   # run sync check before inserting new cards (see Phase 4c)
 ```
+
+Note: `note_type`, `front_field`, and `back_field` are no longer configurable
+— ankivibes always uses its own `AnkiVibes` note type with fixed field names.
+This simplifies sync and avoids misconfiguration.
 
 **Safety rules:**
 
@@ -517,11 +531,12 @@ backup_dir = "~/.local/share/ankivibes/backups"
 
 - Unit tests for the card formatting / preview logic (pure functions)
 - Unit tests for backup creation (mock filesystem)
+- Unit test for AnkiVibes note type creation: assert correct fields, card
+  template, and that `ankivibes_id` is not visible on the card face
 - Unit test for Anki note construction: given a `WordEntry`, assert the
-  resulting note has correct front/back fields
+  resulting note has correct `Front`, `Back`, and `ankivibes_id` fields
 - Integration test: create a temporary `.anki2` file, insert a note, reopen
-  and verify the note exists. (The `anki` library can create empty collections
-  for test use.)
+  and verify the note exists with the correct fields and `ankivibes` tag
 - Do not test interactive prompts directly; test the underlying service
   functions that the prompts call
 
@@ -536,11 +551,119 @@ uv run pytest
 
 ---
 
-## Phase 4.5 — Ingest from Existing Anki Deck
+## Phase 4a.1 — Anki Profile Setup UX
 
-**Goal:** Bootstrap the ankivibes store from your existing Anki collection by
-marking words already in the deck as `inserted` so they never appear in the
-ready queue. This is a read-only operation against your Anki file.
+**Goal:** Remove the manual step of creating an Anki profile and locating the
+`.anki2` file. Today, the user must: open Anki, create a profile, find the
+resulting path under `~/Library/Application Support/Anki2/<Profile>/collection.anki2`,
+and paste it into ankivibes config. This is error-prone and undiscoverable.
+
+**Background:** When `ankivibes anki` is run for the first time and
+`collection_path` is not configured, the tool should offer to handle setup
+automatically instead of prompting for a raw file path.
+
+### Deliverables
+
+- **Profile discovery** — scan `~/Library/Application Support/Anki2/` (macOS)
+  for existing profiles and their collection files. If exactly one profile
+  exists, offer to use it. If multiple exist, present a numbered menu. If none
+  exist, offer to create one.
+
+- **Profile creation** — if no profiles exist (or the user wants a new one),
+  ankivibes should be able to create the profile directory and an empty
+  `collection.anki2` without requiring Anki to be open. The `anki` Python
+  library creates a valid collection when given a path to a non-existent file,
+  so this is straightforward.
+
+- **Auto-configure** — once a collection is selected or created, save
+  `collection_path` to `config.toml` automatically, with no manual path entry.
+
+- **Cross-platform note** — Linux stores Anki data under `~/.local/share/Anki2/`
+  and Windows under `%APPDATA%\Anki2\`. The discovery logic should use a
+  `find_anki_base_dir()` helper that returns the platform-appropriate path so
+  other platforms can be supported later without touching the setup flow.
+
+### Flow (first run, macOS, no existing profiles)
+
+```
+$ ankivibes anki
+No Anki collection configured.
+No existing Anki profiles found at ~/Library/Application Support/Anki2/.
+
+Create a new Anki profile? [Y/n]: y
+Profile name [Spanish]: Spanish
+Created new Anki profile at:
+  ~/Library/Application Support/Anki2/Spanish/collection.anki2
+Saved to ~/.config/ankivibes/config.toml
+
+[continues to card review...]
+```
+
+### Flow (first run, existing profiles found)
+
+```
+$ ankivibes anki
+No Anki collection configured.
+Found Anki profiles:
+  1. User 1  (~/Library/Application Support/Anki2/User 1/collection.anki2)
+  2. Spanish (~/Library/Application Support/Anki2/Spanish/collection.anki2)
+  3. Create new profile
+
+Select profile [1]: 2
+Saved to ~/.config/ankivibes/config.toml
+
+[continues to card review...]
+```
+
+### Testing
+
+- Unit test for `find_anki_base_dir()` — returns correct path per platform
+- Unit test for profile discovery — given a mock directory structure, returns
+  expected profile list
+- Unit test for profile creation — creates the directory and a valid
+  `collection.anki2` file
+- Do not test the interactive prompt directly; test the underlying functions
+
+### Verifiable
+
+```sh
+rm ~/.config/ankivibes/config.toml   # reset config
+uv run ankivibes anki --dry-run      # triggers setup flow
+```
+
+---
+
+## Phase 4b — Import from Existing Anki Deck
+
+> **Stop.** Before implementing Phase 4b, ask the user what they want to
+> change about this phase. They expressed dissatisfaction with the matching
+> approach — specifically, they want fuzzy matching to reuse the existing NLP
+> pipeline (lemmatization, normalization) rather than relying on simple
+> string matching or edit-distance heuristics. The design below is a draft
+> and should be revised based on their feedback before any code is written.
+
+**Goal:** Bootstrap the ankivibes store from an existing Anki collection.
+Match existing cards to store entries, adopt unmatched cards, and migrate
+matched cards from the `Basic` note type to the `AnkiVibes` note type so
+they become ankivibes-managed and syncable.
+
+This phase is for users who already have a Spanish Anki deck with
+unstructured cards (e.g., Spanish word on the front, freeform definitions on
+the back) and want to bring them under ankivibes management without losing
+review history.
+
+### How note type migration works
+
+Anki's data model ties review history (scheduling, ease, interval) to the
+**card**, not the note type. Changing a note's type preserves all review
+history. The migration maps fields by name:
+
+- `Basic.Front` → `AnkiVibes.Front` (unchanged)
+- `Basic.Back` → `AnkiVibes.Back` (unchanged)
+- (new) `AnkiVibes.ankivibes_id` ← populated with the matched store entry's ID
+
+Cards that don't match any store entry stay as `Basic` — they are not
+ankivibes-managed and are left untouched.
 
 ### Pre-implementation questions (Claude must ask these before starting)
 
@@ -555,55 +678,168 @@ ready queue. This is a read-only operation against your Anki file.
 >    a configurable list? Do you use subdecks (e.g., `Spanish::Verbs`) and
 >    should they be included?
 >
-> 3. **Match field:** What field on your existing cards holds the Spanish lemma
->    — is it the "Front" field of a Basic note, or a custom note type with a
->    different field name?
+> 3. **Match strategy:** Should matching be exact (case-insensitive equality
+>    on the front field) or fuzzy (e.g., "correr" matches a card whose front
+>    is "Correr — to run")? What should happen if a card front contains more
+>    than just the lemma?
 >
-> 4. **Match strategy:** Should matching be exact (case-insensitive equality)
->    or fuzzy (e.g., "correr" matches a card with front "Correr — to run")?
->    What should happen if a card front contains more than just the lemma?
->
-> 5. **Conflict handling:** If a word is already `enriched` in ankivibes but
->    also exists in your Anki deck, should the scan overwrite its status to
+> 4. **Conflict handling:** If a word is already `enriched` in ankivibes but
+>    also exists in your Anki deck, should the import overwrite its status to
 >    `inserted`, or leave enriched entries untouched so you can re-review them?
->
-> 6. **One-time vs. recurring:** Is this a one-time bootstrap (run once to
->    seed the store from your existing deck) or a recurring sync (re-run
->    periodically to pick up cards added outside ankivibes)?
 
-### `ankivibes ingest --anki-deck <file>`
+### `ankivibes anki import`
 
-- Uses the `anki` library to open the collection read-only
-- Matches on the configured front field (exact strategy TBD per answers above)
-- Writes `inserted` status to the JSONL store for matches
-- Never writes to the Anki file in this step
-- Prints a summary: N words found in deck, M matched to store entries, K new
-  entries created for deck words not yet in the store
+Two modes of operation:
 
-### Configuration
+**Mode 1 — Match & claim:** For Anki cards whose front field matches a store
+entry's lemma (case-insensitive). These cards are "claimed" by ankivibes:
 
-```toml
-[anki]
-collection_path = "/Users/you/Library/Application Support/Anki2/User 1/collection.anki2"
-deck_name = "Spanish"        # deck(s) to scan; "*" for all
-front_field = "Front"        # field to match against
-```
+- Change the note type from `Basic` to `AnkiVibes` (field mapping: Front →
+  Front, Back → Back, ankivibes_id ← store entry ID)
+- Add the `ankivibes` tag to the note
+- In the store: set status to `inserted`, record `anki_note_id` and
+  `last_synced_at`
+
+**Mode 2 — Adopt unmatched:** For Anki cards that don't match any store entry
+(common when the card front isn't a clean lemma, or the word hasn't been
+ingested yet). These can optionally be imported into the store:
+
+- Create a new `WordEntry` with status `inserted`, `source = "anki_import"`,
+  and the card's front field as the lemma
+- Migrate the note to `AnkiVibes` type and populate `ankivibes_id`
+- Flag: `--adopt-unmatched` enables this mode (off by default, since
+  unstructured cards may not have clean lemmas)
+
+**Default match strategy:** Case-insensitive exact match on the front field.
+A `--fuzzy` flag enables substring/edit-distance matching with interactive
+review of each fuzzy match before committing.
+
+**Safety:**
+
+- **Create a timestamped backup** of the `.anki2` file before any writes
+- Dry-run first: always show a summary before committing ("Will migrate 247
+  of 312 cards from Basic to AnkiVibes. 65 unmatched cards stay as Basic.
+  Proceed? [y/N]")
+- Idempotent: running import twice has the same result — already-migrated
+  cards are detected by note type and skipped
 
 ### Testing
 
 - Unit tests using a minimal fixture `.anki2` file (created via the `anki`
-  library's test utilities)
-- Assert that matched words get `inserted` status
-- Assert that unmatched words are unaffected
+  library's test utilities) containing `Basic` notes
+- Assert that matched cards are migrated to `AnkiVibes` note type with
+  correct field mapping and `ankivibes` tag
+- Assert that matched store entries get `inserted` status and `anki_note_id`
+- Assert that unmatched Anki cards are left as `Basic` (without `--adopt`)
+- Assert that `--adopt-unmatched` creates store entries for unmatched cards
 - Assert the command is idempotent (running twice has the same result)
-- Integration test: ingest a word list, scan a fixture deck containing some
-  of those words, assert the overlapping words become `inserted`
+- Assert review history is preserved through note type migration
+- Integration test: ingest a word list, create a fixture deck with some of
+  those words as `Basic` notes, run import, verify migrations and store state
 
 ### Verifiable
 
 ```sh
-uv run ankivibes ingest words.txt --anki-deck ~/path/to/collection.anki2
+uv run ankivibes anki import --dry-run    # preview what will be migrated
+uv run ankivibes anki import              # migrate and claim cards
 uv run ankivibes list --status inserted
+uv run pytest
+```
+
+---
+
+## Phase 4c — Sync & Drift Reconciliation
+
+**Goal:** `ankivibes anki sync` detects and resolves drift between the
+ankivibes store and Anki for all ankivibes-managed cards (those with the
+`AnkiVibes` note type and `ankivibes` tag). This command also runs
+automatically before `ankivibes anki` inserts new cards unless disabled
+with `auto_sync = false` in config.
+
+### Why sync is needed
+
+Drift happens in several ways:
+
+- **Store updated after export:** A word is re-enriched (`ankivibes enrich
+  --force`) or manually edited (`ankivibes edit`), so the store has newer
+  content than the Anki card.
+- **Card edited in Anki:** The user edits a card's back field directly in
+  Anki's browser, so the Anki card has content the store doesn't know about.
+- **Card deleted from Anki:** The user deletes a card in Anki, but the store
+  still says `inserted`.
+- **Store entry missing:** The store was cleared and re-built (re-ingest +
+  re-enrich), but Anki still has cards with `ankivibes_id` values that no
+  longer exist in the store.
+
+### `ankivibes anki sync`
+
+Compares store state vs. Anki state for every ankivibes-managed card.
+
+**Detection:** For each ankivibes-managed note in Anki (note type =
+`AnkiVibes`), look up the `ankivibes_id` in the store:
+
+| Store state | Anki state | Drift type |
+|---|---|---|
+| Entry exists, `updated_at` > `last_synced_at` | Note exists, unchanged | `store_updated` — store has newer content |
+| Entry exists, unchanged | Note's Back field differs from what store would generate | `anki_updated` — card was edited in Anki |
+| Entry exists, status = `inserted` | Note not found | `anki_deleted` — card was removed from Anki |
+| Entry not found | Note exists with `ankivibes_id` | `store_missing` — store was rebuilt, Anki card is orphaned |
+
+**Resolution flow (interactive by default):**
+
+For each drifted card, display the diff and prompt:
+
+- `store_updated`: Show what changed in the store. Offer to update the Anki
+  card's Back field to match.
+- `anki_updated`: Show the Anki version vs. the store version. Offer to
+  (a) keep Anki's version and update the store, (b) overwrite Anki with the
+  store version, or (c) skip.
+- `anki_deleted`: Offer to reset the store entry's status to `enriched` so
+  it can be re-inserted, or mark it as `skipped`.
+- `store_missing`: Offer to re-import the Anki card into the store (similar
+  to Phase 4b's adopt mode) or leave it as an unmanaged orphan.
+
+**Batch flags:**
+
+- `--dry-run` — show all drift without changing anything
+- `--prefer store` — resolve all conflicts by overwriting Anki with store data
+- `--prefer anki` — resolve all conflicts by updating the store from Anki
+
+**The `edited` field matters here:** Entries where `edited = True` (manually
+touched via `ankivibes edit`) are never auto-overwritten during batch
+resolution. They always get interactive review, even with `--prefer anki`.
+
+**Auto-sync behavior:** When `auto_sync = true` (the default), `ankivibes
+anki` runs sync silently before showing the review queue. If drift is found,
+it prints a summary and enters the interactive resolution flow. If no drift
+is found, it proceeds directly to the review queue with no extra output.
+The help text for `ankivibes anki sync` should note: "This check runs
+automatically when you run `ankivibes anki` unless `auto_sync = false` is
+set in config."
+
+**Timestamps:** After every successful sync resolution, update
+`last_synced_at` on the affected store entry.
+
+### Testing
+
+- Unit tests for drift detection logic: given a store state and a mock Anki
+  collection state, assert the correct drift types are identified
+- Unit test for each resolution path: `store_updated` updates Anki,
+  `anki_updated` updates store or Anki depending on choice, etc.
+- Unit test that `edited = True` entries are never auto-resolved
+- Unit test for `--dry-run`: assert no writes to store or Anki
+- Unit test for `--prefer store` and `--prefer anki` batch modes
+- Integration test: insert cards via Phase 4a, modify some in the store and
+  some in Anki, run sync, assert correct resolution
+- Integration test for orphaned cards (`store_missing`): clear store,
+  re-ingest, run sync, verify orphans are detected
+
+### Verifiable
+
+```sh
+uv run ankivibes anki sync --dry-run   # show drift without changing anything
+uv run ankivibes anki sync             # interactive resolution
+uv run ankivibes anki sync --prefer store   # batch: store wins
 uv run pytest
 ```
 

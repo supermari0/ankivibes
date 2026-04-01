@@ -230,7 +230,8 @@ def test_edit_sets_edited_flag(tmp_path):
     assert saved.edited is True
 
 
-def test_anki_stub():
-    result = runner.invoke(app, ["anki"])
+def test_anki_no_enriched_entries(tmp_path):
+    store_path = tmp_path / "words.jsonl"
+    result = runner.invoke(app, ["anki", "--dry-run", "--store-path", str(store_path)])
     assert result.exit_code == 0
-    assert "not yet implemented" in result.output
+    assert "No enriched entries" in result.output

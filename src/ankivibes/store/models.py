@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 STATUS_READY = "ready"
 STATUS_NEEDS_REVIEW = "needs_review"
@@ -43,6 +43,8 @@ class WordEntry:
     updated_at: str
     schema_version: int = field(default=SCHEMA_VERSION)
     edited: bool = False
+    anki_note_id: int | None = None
+    last_synced_at: str | None = None
 
     @classmethod
     def create(
