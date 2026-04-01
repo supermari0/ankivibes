@@ -234,3 +234,11 @@ uv run pytest           # Run tests
 uv run pytest --cov     # Run tests with coverage
 uv run mypy src/        # Run static type checker
 ```
+
+## Citations
+
+Frequency data for Spanish in the `data/` directory is courtesy of the [Real Academia Española](https://www.rae.es/corpes/)
+
+```
+REAL ACADEMIA ESPAÑOLA: Banco de datos (CORPES XXI) [en línea]. Corpus del Español del Siglo XXI (CORPES). <http://www.rae.es> [2025]
+```
