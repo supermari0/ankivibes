@@ -413,7 +413,8 @@ uv run pytest                          # all tests pass (55 tests)
 
 ---
 
-## Phase 4a — Anki Bridge Foundation & Card Export
+## Phase 4a — Anki Bridge Foundation & Card Export ✓
+
 
 **Goal:** Define the AnkiVibes note type, build card formatting and backup
 infrastructure, and implement the interactive review-and-insert flow via
