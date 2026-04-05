@@ -322,6 +322,59 @@ def edit(
     rprint(f"[green]Updated {lemma} with {len(new_definitions)} definition(s).[/green]")
 
 
+def _run_profile_setup(cfg: cfg_module.Config) -> Path:
+    """Discover or create an Anki profile and save the collection path to config."""
+    from .anki_profile import create_profile, discover_profiles, find_anki_base_dir, format_profile_menu, resolve_profile
+
+    base_dir = find_anki_base_dir()
+    if base_dir is None:
+        rprint("No Anki data directory found.")
+        path_str = typer.prompt("Path to your .anki2 file")
+        col_path = Path(path_str).expanduser()
+        cfg.anki.collection_path = col_path
+        cfg_module.save(cfg)
+        rprint(f"Saved to {cfg_module._CONFIG_PATH}")
+        return col_path
+
+    rprint("No Anki collection configured.")
+    profiles = discover_profiles(base_dir)
+
+    if not profiles:
+        rprint(f"No existing Anki profiles found at {base_dir}/")
+        if typer.confirm("Create a new Anki profile?", default=True):
+            name = typer.prompt("Profile name", default="User 1")
+            profile = create_profile(base_dir, name)
+            rprint(f"Created new Anki profile at:\n  {profile.collection_path}")
+        else:
+            raise typer.Abort()
+
+    elif len(profiles) == 1:
+        p = profiles[0]
+        rprint(f"Found Anki profile: {p.name}  ({p.collection_path})")
+        if typer.confirm("Use this profile?", default=True):
+            profile = p
+        else:
+            name = typer.prompt("Profile name", default="User 1")
+            profile = create_profile(base_dir, name)
+            rprint(f"Created new Anki profile at:\n  {profile.collection_path}")
+
+    else:
+        rprint("Found Anki profiles:")
+        rprint(format_profile_menu(profiles))
+        choice = typer.prompt("Select profile", type=int, default=1)
+        if choice == len(profiles) + 1:
+            name = typer.prompt("Profile name", default="User 1")
+            profile = create_profile(base_dir, name)
+            rprint(f"Created new Anki profile at:\n  {profile.collection_path}")
+        else:
+            profile = resolve_profile(profiles, choice)
+
+    cfg.anki.collection_path = profile.collection_path
+    cfg_module.save(cfg)
+    rprint(f"Saved to {cfg_module._CONFIG_PATH}")
+    return profile.collection_path
+
+
 @app.command()
 def anki(
     dry_run: Annotated[bool, typer.Option("--dry-run", help="Preview cards without writing to Anki.")] = False,
@@ -352,14 +405,10 @@ def anki(
         rprint("[dim]No enriched entries to review.[/dim]")
         return
 
-    # Prompt for collection_path if not configured (only after confirming there's work)
+    # Set up collection path if not configured (only after confirming there's work)
     if not dry_run:
         if cfg.anki.collection_path is None:
-            rprint("Anki collection path is not configured.")
-            path_str = typer.prompt("Path to your .anki2 file")
-            cfg.anki.collection_path = Path(path_str).expanduser()
-            cfg_module.save(cfg)
-            rprint(f"Saved to {cfg_module._CONFIG_PATH}")
+            cfg.anki.collection_path = _run_profile_setup(cfg)
 
         collection_path = cfg.anki.collection_path
         assert collection_path is not None
