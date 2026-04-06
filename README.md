@@ -60,11 +60,27 @@ uv run ankivibes --help
 
 ## Quick Start
 
+### Starting fresh (no existing Anki deck)
+
 The typical workflow is:
 
 ```
 ingest → enrich → anki
 ```
+
+### Migrating an existing Anki deck
+
+If you already have a Spanish deck in Anki, use `import-deck` first:
+
+```
+import-deck → (more ingest) → enrich → anki
+```
+
+See [Import an existing Anki deck](#import-an-existing-anki-deck) below.
+
+---
+
+## Workflow
 
 ### 1. Create a word list
 
@@ -112,7 +128,7 @@ Options:
 - `--top N` — only enrich the top N words by frequency
 - `--force` — re-fetch definitions for already-enriched words
 
-### 5. Review the queue and insert into Anki
+### 5. Review and insert into Anki
 
 ```sh
 ankivibes anki
@@ -128,6 +144,11 @@ Opens an interactive card review loop. For each enriched word you can:
 After reviewing, you'll see a summary of staged vs. skipped cards and a
 confirmation prompt before anything is written to Anki.
 
+**First run:** if no Anki collection is configured yet, ankivibes will scan
+`~/Library/Application Support/Anki2/` for existing profiles and offer a
+numbered menu. If no profiles exist, it can create one for you. No manual
+path configuration needed.
+
 Use `--dry-run` to preview cards without touching the Anki collection:
 
 ```sh
@@ -136,51 +157,98 @@ ankivibes anki --dry-run
 
 ---
 
-## Setting up Anki for use with ankivibes (macOS)
+## Import an existing Anki deck
 
-ankivibes reads and writes Anki's `.anki2` SQLite database directly. For Anki
-to pick up the cards you insert, the collection file needs to live inside a
-profile directory that Anki knows about.
+If you already have a Spanish deck in Anki and want to bring it under
+ankivibes management (preserving your review history), use:
 
-### Step 1: Install Anki
-
-Download Anki from [apps.ankiweb.net](https://apps.ankiweb.net) and open it at
-least once to let it create its default profile directory.
-
-### Step 2: Create a dedicated profile
-
-It's safest to keep ankivibes cards in their own Anki profile so they don't
-interfere with any existing decks.
-
-1. In Anki, go to **File → Switch Profile → Add**
-2. Give it a name, e.g. `Spanish`
-3. Click **Open**
-
-Anki will create:
-
-```
-~/Library/Application Support/Anki2/Spanish/collection.anki2
+```sh
+ankivibes import-deck
 ```
 
-### Step 3: Configure ankivibes
+> **Note:** This command is implemented but not yet fully tested against a real
+> deck. Use `--dry-run` first and make sure the preview looks right before
+> committing to the migration. A timestamped backup of your `.anki2` file is
+> created automatically before any writes.
 
-Point ankivibes at that collection file. Either set it once with the interactive
-prompt (it will ask the first time you run `ankivibes anki`) or add it directly
-to `~/.config/ankivibes/config.toml`:
+**What it does:**
 
-```toml
-[anki]
-collection_path = "/Users/yourname/Library/Application Support/Anki2/Spanish/collection.anki2"
-deck_name = "Spanish"
+1. **Guided source selection** — scans for Anki profiles and decks, presents
+   a numbered menu. Use `--collection PATH` and `--deck NAME` to skip the
+   interactive selection.
+
+2. **Ingest** — reads card fronts from the deck, runs them through the same
+   lemmatization and frequency pipeline as `ankivibes ingest`. Cards without
+   a corpus frequency match land in `needs_review` but are still migrated.
+
+3. **Enrich** — fetches Wiktionary definitions for all ready words. Use
+   `--skip-enrich` to defer this step.
+
+4. **Interactive review** — for each word, shows the old card back alongside
+   the Wiktionary enrichment side by side:
+
+   ```
+   ┌──────────────────────────────────────────────────┐
+   │ [1/247]  correr  (verb)  freq: 0.892             │
+   ├──────────────────────────────────────────────────┤
+   │ EXISTING CARD BACK                               │
+   │   to run, to flow, to rush                       │
+   ├──────────────────────────────────────────────────┤
+   │ WIKTIONARY ENRICHMENT                            │
+   │   to run; to flow                                │
+   │                                                  │
+   │   "El río corre hacia el mar."                   │
+   │   → "The river flows toward the sea."            │
+   └──────────────────────────────────────────────────┘
+     [n] use new   [o] keep old   [e] edit   [s] skip   [q] quit
+   ```
+
+   - `[n]` — use the Wiktionary enrichment as the card back
+   - `[o]` — keep your existing card back unchanged
+   - `[e]` — open `$EDITOR` with the enriched definitions pre-filled and the
+     old back shown as comments at the top for reference
+   - `[s]` — skip this card (it will not be migrated)
+   - `[q]` — quit the review loop (unreviewed cards are not migrated)
+
+5. **Migration** — changes the note type from `Basic` to `AnkiVibes` in place.
+   Review history (scheduling, ease, intervals) is preserved because Anki ties
+   it to the card, not the note type.
+
+6. **Config update** — saves the imported collection and deck name to config so
+   `ankivibes anki` uses the same collection going forward.
+
+Options:
+
+```
+--dry-run          Preview without modifying Anki
+--skip-enrich      Skip the Wiktionary enrichment step
+--collection PATH  Specify source .anki2 file directly
+--deck NAME        Specify deck name directly
 ```
 
-Replace `yourname` with your macOS username and `Spanish` with whatever you
-named your profile.
+---
 
-### Step 4: Keep Anki closed while inserting
+## Setting up Anki
 
-The `.anki2` file is locked while Anki is open. Always quit Anki before
-running `ankivibes anki`. Open Anki afterwards to sync and study.
+ankivibes reads and writes Anki's `.anki2` database directly. **Close Anki
+before running any command that writes to the collection** — the file is locked
+while Anki is open.
+
+### Anki profile setup
+
+When you first run `ankivibes anki`, if no collection is configured, ankivibes
+automatically scans `~/Library/Application Support/Anki2/` for existing profiles:
+
+- **No profiles found** — offers to create a new profile with a name you choose
+- **One profile found** — asks if you want to use it
+- **Multiple profiles found** — shows a numbered menu
+
+You don't need to find or copy any file paths. The selected collection path is
+saved to `~/.config/ankivibes/config.toml` automatically.
+
+If you're **migrating an existing deck**, run `ankivibes import-deck` instead
+of `ankivibes anki` for the first run — that flow will also update the config
+to point at your existing collection.
 
 ---
 
@@ -190,17 +258,19 @@ running `ankivibes anki`. Open Anki afterwards to sync and study.
 |---|---|
 | `ankivibes ingest FILE` | Ingest a word list, lemmatize, and score by frequency |
 | `ankivibes list` | List stored words sorted by frequency |
-| `ankivibes list --status ready` | Filter by status: `ready`, `enriched`, `inserted`, `needs_review` |
+| `ankivibes list --status STATUS` | Filter by status: `ready`, `enriched`, `inserted`, `needs_review` |
 | `ankivibes list --top 50` | Show top 50 words (default: 20) |
 | `ankivibes list --all` | Show all words |
 | `ankivibes review` | Show words that need manual review, with reason codes |
 | `ankivibes enrich` | Fetch Wiktionary definitions for ready words |
-| `ankivibes enrich --top 20` | Enrich only the top 20 by frequency |
+| `ankivibes enrich --top N` | Enrich only the top N by frequency |
 | `ankivibes enrich --force` | Re-fetch definitions for already-enriched words |
 | `ankivibes show LEMMA` | Show full details for a word (definitions, examples, metadata) |
 | `ankivibes edit LEMMA` | Edit a word's definitions in `$EDITOR` |
 | `ankivibes anki` | Interactive card review and insertion into Anki |
 | `ankivibes anki --dry-run` | Preview the card queue without writing anything |
+| `ankivibes import-deck` | Import an existing Anki deck into ankivibes management |
+| `ankivibes import-deck --dry-run` | Preview the import without modifying Anki |
 | `ankivibes --version` | Print version and exit |
 
 All commands accept `--store-path PATH` to override the default store location.
@@ -209,13 +279,14 @@ All commands accept `--store-path PATH` to override the default store location.
 
 ## Configuration
 
-Config lives at `~/.config/ankivibes/config.toml`. It is created automatically
-when you first save a setting via a prompt. You can also edit it directly:
+Config lives at `~/.config/ankivibes/config.toml`. Most settings are written
+automatically by interactive prompts — you shouldn't need to edit this file
+directly, but you can.
 
 ```toml
 store_path = "/Users/yourname/.local/share/ankivibes/words.jsonl"
 corpus_path = "/path/to/diccionario_frecuencias_corpes_alfa.tsv"
-contact_email = "you@example.com"
+contact_email = "you@example.com"    # set on first run of `enrich`
 
 [anki]
 collection_path = "/Users/yourname/Library/Application Support/Anki2/Spanish/collection.anki2"
@@ -223,6 +294,19 @@ deck_name = "Spanish"
 backup_dir = "/Users/yourname/.local/share/ankivibes/backups"
 auto_sync = true
 ```
+
+| Key | Set by | Description |
+|---|---|---|
+| `store_path` | default | Path to the JSONL word store |
+| `corpus_path` | default | Path to the RAE CORPES frequency TSV |
+| `contact_email` | `enrich` first run | Email for Wiktionary User-Agent header |
+| `anki.collection_path` | `anki` or `import-deck` first run | Path to the `.anki2` collection file |
+| `anki.deck_name` | `anki` or `import-deck` first run | Target deck name for card insertion |
+| `anki.backup_dir` | default | Where timestamped `.anki2` backups are written |
+| `anki.auto_sync` | default | Whether to check for drift before inserting new cards |
+
+The `anki.collection_path` and `anki.deck_name` fields are populated
+automatically by the profile/deck selection flow — no manual path entry needed.
 
 ---
 
@@ -234,6 +318,8 @@ uv run pytest           # Run tests
 uv run pytest --cov     # Run tests with coverage
 uv run mypy src/        # Run static type checker
 ```
+
+---
 
 ## Citations
 

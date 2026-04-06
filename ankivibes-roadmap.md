@@ -634,7 +634,7 @@ uv run ankivibes anki --dry-run      # triggers setup flow
 
 ---
 
-## Phase 4b — Import from Existing Anki Deck
+## Phase 4b — Import from Existing Anki Deck ✓ (implemented, pending real-deck test)
 
 **Goal:** Import an existing Anki deck into ankivibes management. Card fronts
 are run through the full ingest pipeline (lemmatization, frequency scoring),
@@ -754,6 +754,26 @@ uv run ankivibes import-deck              # full interactive flow
 uv run ankivibes list --status inserted
 uv run pytest
 ```
+
+### Before proceeding to Phase 4c
+
+> **Stop.** The user must test `ankivibes import-deck` against their real
+> Spanish deck and confirm it works correctly before any further phases are
+> implemented. Do not proceed with Phase 4c until this confirmation is given.
+
+### Pre-import consideration: batching for large decks
+
+The current `import-deck` flow runs the entire deck through ingest, enrichment,
+and interactive review in a single session. For a large deck (hundreds of
+cards), this may be impractical — enrichment alone could take minutes, and
+reviewing all cards in one sitting is tedious.
+
+Before running `import-deck` on the real deck, consider adding a `--limit N`
+flag (or similar) to process N cards at a time, picking up where the previous
+session left off. The idempotency guarantee (already-migrated `AnkiVibes` notes
+are skipped) means batching is safe — running the command multiple times
+converges to a fully migrated deck. This should be designed and implemented
+before the real import run if the deck is large enough to warrant it.
 
 ---
 
