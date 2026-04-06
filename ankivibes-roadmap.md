@@ -552,7 +552,7 @@ uv run pytest
 
 ---
 
-## Phase 4a.1 — Anki Profile Setup UX
+## Phase 4a.1 — Anki Profile Setup UX ✓
 
 **Goal:** Remove the manual step of creating an Anki profile and locating the
 `.anki2` file. Today, the user must: open Anki, create a profile, find the
@@ -636,113 +636,121 @@ uv run ankivibes anki --dry-run      # triggers setup flow
 
 ## Phase 4b — Import from Existing Anki Deck
 
-> **Stop.** Before implementing Phase 4b, ask the user what they want to
-> change about this phase. They expressed dissatisfaction with the matching
-> approach — specifically, they want fuzzy matching to reuse the existing NLP
-> pipeline (lemmatization, normalization) rather than relying on simple
-> string matching or edit-distance heuristics. The design below is a draft
-> and should be revised based on their feedback before any code is written.
+**Goal:** Import an existing Anki deck into ankivibes management. Card fronts
+are run through the full ingest pipeline (lemmatization, frequency scoring),
+enriched via Wiktionary, and the user interactively compares old card backs
+against the enriched versions. Cards are migrated in-place from `Basic` to
+`AnkiVibes` note type, preserving review history.
 
-**Goal:** Bootstrap the ankivibes store from an existing Anki collection.
-Match existing cards to store entries, adopt unmatched cards, and migrate
-matched cards from the `Basic` note type to the `AnkiVibes` note type so
-they become ankivibes-managed and syncable.
+### Design decisions (resolved)
 
-This phase is for users who already have a Spanish Anki deck with
-unstructured cards (e.g., Spanish word on the front, freeform definitions on
-the back) and want to bring them under ankivibes management without losing
-review history.
+- **Collection format:** Direct `.anki2` file access (same as Phase 4a).
+- **Deck scope:** Single deck, selected interactively via a guided menu.
+- **Matching:** No fuzzy or exact matching needed. Card fronts go through
+  `ingest_words()` — the same normalization/lemmatization/frequency pipeline
+  used by `ankivibes ingest`. The pipeline output links back to source notes
+  via the normalized form.
+- **Review history:** Migrated in-place within the source collection. Anki
+  ties scheduling data to the card, not the note type, so changing from
+  `Basic` to `AnkiVibes` preserves all review state.
+- **Cards without frequency:** Imported as `needs_review` entries. Their Anki
+  notes still get migrated to `AnkiVibes` type with the old card back intact.
 
-### How note type migration works
+### `ankivibes import-deck`
 
-Anki's data model ties review history (scheduling, ease, interval) to the
-**card**, not the note type. Changing a note's type preserves all review
-history. The migration maps fields by name:
+Top-level command (not a subcommand of `anki`) to avoid restructuring the
+existing `ankivibes anki` command into a Typer subapp.
 
-- `Basic.Front` → `AnkiVibes.Front` (unchanged)
-- `Basic.Back` → `AnkiVibes.Back` (unchanged)
-- (new) `AnkiVibes.ankivibes_id` ← populated with the matched store entry's ID
+```
+ankivibes import-deck [--dry-run] [--skip-enrich] [--collection PATH] [--deck NAME]
+```
 
-Cards that don't match any store entry stay as `Basic` — they are not
-ankivibes-managed and are left untouched.
+**Flow:**
 
-### Pre-implementation questions (Claude must ask these before starting)
+1. **Source selection** — guided profile/deck picker using the same discovery
+   functions from Phase 4a.1 (`find_anki_base_dir`, `discover_profiles`,
+   `format_profile_menu`). Then list decks in the chosen collection and
+   present a numbered menu. `--collection` and `--deck` flags skip the
+   interactive selection.
 
-> **Stop.** Before implementing this phase, ask the user the following
-> questions and record their answers below:
->
-> 1. **Collection format:** Is your Anki collection a `.anki2` file (direct
->    SQLite), an `.apkg` export, or do you prefer to access it through
->    AnkiConnect (HTTP API while Anki is running)?
->
-> 2. **Deck scope:** Should ankivibes scan a single named deck, all decks, or
->    a configurable list? Do you use subdecks (e.g., `Spanish::Verbs`) and
->    should they be included?
->
-> 3. **Match strategy:** Should matching be exact (case-insensitive equality
->    on the front field) or fuzzy (e.g., "correr" matches a card whose front
->    is "Correr — to run")? What should happen if a card front contains more
->    than just the lemma?
->
-> 4. **Conflict handling:** If a word is already `enriched` in ankivibes but
->    also exists in your Anki deck, should the import overwrite its status to
->    `inserted`, or leave enriched entries untouched so you can re-review them?
+2. **Read & ingest** — open the collection, read all `Basic` notes in the
+   selected deck (skip notes already using `AnkiVibes` type for idempotency).
+   Strip HTML from front fields. Feed all fronts through `ingest_words()` with
+   `source="anki_import"`. Build a mapping linking each `WordEntry` back to
+   its source Anki note(s) via the normalized front. Merge each entry into the
+   store via `store.merge()`. Print a summary.
 
-### `ankivibes anki import`
+3. **Enrich** (skippable with `--skip-enrich`) — run `enrich_one()` on all
+   `ready` entries, exactly like `ankivibes enrich`. Progress bar via Rich.
+   Entries that fail enrichment still participate in the review step.
 
-Two modes of operation:
+4. **Interactive review** — for each unique word, display a Rich panel
+   comparing the old card back against the Wiktionary enrichment:
 
-**Mode 1 — Match & claim:** For Anki cards whose front field matches a store
-entry's lemma (case-insensitive). These cards are "claimed" by ankivibes:
+   ```
+   ┌──────────────────────────────────────────────────┐
+   │ [1/247]  correr  (verb)  freq: 0.892             │
+   ├──────────────────────────────────────────────────┤
+   │ EXISTING CARD BACK                               │
+   │   to run, to flow, to rush                       │
+   ├──────────────────────────────────────────────────┤
+   │ WIKTIONARY ENRICHMENT                            │
+   │   to run; to flow                                │
+   │                                                  │
+   │   "El río corre hacia el mar."                   │
+   │   → "The river flows toward the sea."            │
+   └──────────────────────────────────────────────────┘
+     [n] use new   [o] keep old   [e] edit   [s] skip   [q] quit
+   ```
 
-- Change the note type from `Basic` to `AnkiVibes` (field mapping: Front →
-  Front, Back → Back, ankivibes_id ← store entry ID)
-- Add the `ankivibes` tag to the note
-- In the store: set status to `inserted`, record `anki_note_id` and
-  `last_synced_at`
+   - **Enriched entries:** full options — `[n]ew`, `[o]ld`, `[e]dit`,
+     `[s]kip`, `[q]uit`
+   - **Non-enriched entries:** `[o]ld`, `[s]kip`, `[q]uit` only
+   - `[e]dit` opens `$EDITOR` with enriched definitions in the standard edit
+     format (reusing `editor.py`), with the old card back shown as comment
+     lines at the top for reference
+   - If multiple notes share the same front, a warning is shown and the
+     decision applies to all
 
-**Mode 2 — Adopt unmatched:** For Anki cards that don't match any store entry
-(common when the card front isn't a clean lemma, or the word hasn't been
-ingested yet). These can optionally be imported into the store:
+5. **Migrate** — back up the collection, then for each non-skipped entry:
+   change the note's model ID to `AnkiVibes`, rebuild the fields list
+   (`[Front, Back, ankivibes_id]`), update the Back field if the user chose
+   `new` or `edit`, add the `ankivibes` tag, and call `col.update_note()`.
+   Update the store: `status = inserted`, `anki_note_id`, `last_synced_at`.
 
-- Create a new `WordEntry` with status `inserted`, `source = "anki_import"`,
-  and the card's front field as the lemma
-- Migrate the note to `AnkiVibes` type and populate `ankivibes_id`
-- Flag: `--adopt-unmatched` enables this mode (off by default, since
-  unstructured cards may not have clean lemmas)
-
-**Default match strategy:** Case-insensitive exact match on the front field.
-A `--fuzzy` flag enables substring/edit-distance matching with interactive
-review of each fuzzy match before committing.
+6. **Update config** — set `collection_path` and `deck_name` to the imported
+   collection/deck. This means ankivibes manages cards in the old collection
+   going forward.
 
 **Safety:**
 
 - **Create a timestamped backup** of the `.anki2` file before any writes
-- Dry-run first: always show a summary before committing ("Will migrate 247
-  of 312 cards from Basic to AnkiVibes. 65 unmatched cards stay as Basic.
-  Proceed? [y/N]")
-- Idempotent: running import twice has the same result — already-migrated
-  cards are detected by note type and skipped
+- Idempotent: running import twice finds no new `Basic` candidates
+- Notes already using `AnkiVibes` type are skipped during read
+- `--dry-run` shows the full ingest/enrich summary without writing
 
 ### Testing
 
-- Unit tests using a minimal fixture `.anki2` file (created via the `anki`
-  library's test utilities) containing `Basic` notes
-- Assert that matched cards are migrated to `AnkiVibes` note type with
-  correct field mapping and `ankivibes` tag
-- Assert that matched store entries get `inserted` status and `anki_note_id`
-- Assert that unmatched Anki cards are left as `Basic` (without `--adopt`)
-- Assert that `--adopt-unmatched` creates store entries for unmatched cards
-- Assert the command is idempotent (running twice has the same result)
-- Assert review history is preserved through note type migration
-- Integration test: ingest a word list, create a fixture deck with some of
-  those words as `Basic` notes, run import, verify migrations and store state
+- Unit tests for `build_import_candidates` (linking, deduplication, AnkiVibes
+  filtering), `format_import_preview` (enriched and non-enriched cases), and
+  `format_edit_with_reference` (output format)
+- Integration tests (require `anki` package):
+  - `read_deck_notes` — create collection with Basic notes, read back
+  - `list_decks` — create collection with multiple decks, verify listing
+  - `migrate_notes` — verify note type changes, field mapping, tag addition
+  - `migrate_notes` — verify review history preserved (card scheduling data
+    unchanged after migration)
+  - `migrate_notes` — verify Back updated when decision is "new", preserved
+    when decision is "old"
+  - Idempotency — running import twice finds no new candidates
+  - Full pipeline — read → ingest → enrich → migrate → verify final state
+- Do not test interactive prompts directly; test the underlying functions
 
 ### Verifiable
 
 ```sh
-uv run ankivibes anki import --dry-run    # preview what will be migrated
-uv run ankivibes anki import              # migrate and claim cards
+uv run ankivibes import-deck --dry-run    # preview without modifying Anki
+uv run ankivibes import-deck              # full interactive flow
 uv run ankivibes list --status inserted
 uv run pytest
 ```

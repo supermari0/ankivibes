@@ -520,3 +520,287 @@ def anki(
     rprint(f"\n[green]Inserted {len(results)} card(s) into deck '{cfg.anki.deck_name}'.[/green]")
     for res in results:
         rprint(f"  {res.entry.lemma} → note {res.anki_note_id}")
+
+
+@app.command(name="import-deck")
+def import_deck(
+    dry_run: Annotated[bool, typer.Option("--dry-run", help="Preview without modifying Anki.")] = False,
+    skip_enrich: Annotated[bool, typer.Option("--skip-enrich", help="Skip Wiktionary enrichment.")] = False,
+    collection: Annotated[Optional[Path], typer.Option(help="Path to source .anki2 file (skips profile selection).")] = None,
+    deck: Annotated[Optional[str], typer.Option(help="Deck name to import (skips deck selection).")] = None,
+    store_path: Annotated[Optional[Path], typer.Option(help="Override default store path.")] = None,
+) -> None:
+    """Import an existing Anki deck into ankivibes management."""
+    import os
+    import subprocess
+    import tempfile
+    from datetime import datetime, timezone
+
+    import click
+
+    from .anki_import import (
+        AnkiNoteInfo,
+        build_import_candidates,
+        format_edit_with_reference,
+        format_import_preview,
+        list_decks,
+        migrate_notes,
+        read_deck_notes,
+    )
+    from .anki_profile import discover_profiles, find_anki_base_dir, format_profile_menu, resolve_profile
+    from .anki_bridge import check_collection_locked
+    from .corpus import CORPESCorpus
+    from .editor import text_to_definitions
+    from .enrich import enrich_one, select_entries_to_enrich
+    from .lemmatizer import SpacyLemmatizer
+    from .pipeline import ingest_words
+    from .store.models import STATUS_INSERTED
+
+    cfg = cfg_module.load()
+    effective_store = store_path or cfg.store_path
+    store = JsonlStore(effective_store)
+
+    # -- Phase A: Source selection ------------------------------------------
+    if collection is not None:
+        source_collection = collection.expanduser()
+    else:
+        base_dir = find_anki_base_dir()
+        if base_dir is None:
+            rprint("[red]No Anki data directory found.[/red]")
+            rprint("Use --collection to specify the path directly.")
+            raise typer.Exit(1)
+
+        profiles = discover_profiles(base_dir)
+        if not profiles:
+            rprint(f"[red]No Anki profiles found at {base_dir}.[/red]")
+            raise typer.Exit(1)
+
+        if len(profiles) == 1:
+            p = profiles[0]
+            rprint(f"Found Anki profile: {p.name}  ({p.collection_path})")
+            if not typer.confirm("Import from this profile?", default=True):
+                raise typer.Abort()
+            source_collection = p.collection_path
+        else:
+            rprint("Found Anki profiles:")
+            rprint(format_profile_menu(profiles))
+            choice = typer.prompt("Select profile", type=int, default=1)
+            try:
+                source_collection = resolve_profile(profiles, choice).collection_path
+            except ValueError as exc:
+                rprint(f"[red]{exc}[/red]")
+                raise typer.Exit(1)
+
+    if not source_collection.exists():
+        rprint(f"[red]Collection not found: {source_collection}[/red]")
+        raise typer.Exit(1)
+
+    if check_collection_locked(source_collection):
+        rprint("[red]Error:[/red] Anki appears to be open (collection is locked).")
+        rprint("Close Anki before importing.")
+        raise typer.Exit(1)
+
+    # -- Deck selection -------------------------------------------------------
+    if deck is not None:
+        source_deck = deck
+    else:
+        deck_list = list_decks(source_collection)
+        # Filter out the default deck ("Default" with id 1)
+        deck_list = [(did, name) for did, name in deck_list if name != "Default"]
+        if not deck_list:
+            rprint("[red]No decks found in collection.[/red]")
+            raise typer.Exit(1)
+
+        if len(deck_list) == 1:
+            source_deck = deck_list[0][1]
+            rprint(f"Found deck: {source_deck}")
+            if not typer.confirm("Import from this deck?", default=True):
+                raise typer.Abort()
+        else:
+            rprint("Found decks:")
+            for i, (_, name) in enumerate(deck_list, 1):
+                rprint(f"  {i}. {name}")
+            choice = typer.prompt("Select deck", type=int, default=1)
+            if choice < 1 or choice > len(deck_list):
+                rprint("[red]Invalid selection.[/red]")
+                raise typer.Exit(1)
+            source_deck = deck_list[choice - 1][1]
+
+    rprint(f"\nImporting from: [bold]{source_collection}[/bold]  deck: [bold]{source_deck}[/bold]")
+
+    # -- Phase B: Read & ingest -----------------------------------------------
+    rprint("\n[bold]Reading notes...[/bold]")
+    notes = read_deck_notes(source_collection, source_deck)
+    if not notes:
+        rprint("[dim]No Basic notes to import (all may already be AnkiVibes type).[/dim]")
+        return
+
+    rprint(f"Found {len(notes)} note(s) to import.")
+
+    corpus = CORPESCorpus(cfg.corpus_path)
+    lemmatizer = SpacyLemmatizer()
+    fronts = [n.front for n in notes]
+    entries = ingest_words(fronts, source=f"anki_import:{source_deck}", lemmatizer=lemmatizer, corpus=corpus)
+
+    ready = sum(1 for e in entries if e.status == "ready")
+    needs_review = sum(1 for e in entries if e.status == "needs_review")
+    rprint(f"Pipeline: {ready} ready, {needs_review} needs_review")
+
+    for entry in entries:
+        store.merge(entry)
+
+    # Build candidates linking entries to source notes
+    candidates = build_import_candidates(notes, entries)
+    rprint(f"Matched {len(candidates)} unique word(s) to source notes.")
+
+    if dry_run:
+        rprint("\n[dim]Dry run — no changes written.[/dim]")
+        return
+
+    # -- Phase C: Enrich -------------------------------------------------------
+    if not skip_enrich:
+        to_enrich = select_entries_to_enrich(store)
+        if to_enrich:
+            contact_email = cfg.contact_email
+            if contact_email is None:
+                rprint("\nWiktionary requests require a contact email for the User-Agent header.")
+                contact_email = typer.prompt("Contact email")
+                cfg.contact_email = contact_email
+                cfg_module.save(cfg)
+
+            from pytionary import WiktionaryClient
+
+            client = WiktionaryClient(contact_email=contact_email)
+            rprint(f"\n[bold]Enriching {len(to_enrich)} word(s)...[/bold]")
+            enriched_count = 0
+            skipped_count = 0
+            for entry in to_enrich:
+                outcome, err = enrich_one(entry, client, store)
+                if outcome == "enriched":
+                    enriched_count += 1
+                else:
+                    skipped_count += 1
+                    if err:
+                        rprint(f"  [dim]Skipped {entry.lemma}: {err}[/dim]")
+            rprint(f"Enriched: {enriched_count}, skipped: {skipped_count}")
+
+        # Reload entries from store to pick up enrichment
+        refreshed: dict[str, object] = {}
+        new_candidates = []
+        for c in candidates:
+            refreshed_entry = store.get(c.entry.id)
+            if refreshed_entry is not None:
+                from ankivibes.anki_import import ImportCandidate
+                new_candidates.append(ImportCandidate(entry=refreshed_entry, notes=c.notes))
+            else:
+                new_candidates.append(c)
+        candidates = new_candidates
+
+    # -- Phase D: Interactive review ------------------------------------------
+    rprint("\n[bold]Review each card:[/bold]")
+    total = len(candidates)
+    skipped_count = 0
+
+    for i, candidate in enumerate(candidates, 1):
+        console.print(format_import_preview(candidate, i, total))
+
+        entry = candidate.entry
+        has_enrichment = entry.status == "enriched" and bool(entry.definitions)
+        valid_keys = {"n", "o", "e", "s", "q"} if has_enrichment else {"o", "s", "q"}
+
+        while True:
+            rprint("[dim]  Press key: [/dim]", end="")
+            ch = click.getchar().lower()
+            rprint()
+
+            if ch not in valid_keys:
+                rprint(f"  [dim]Invalid key. Press {'n/o/e/s/q' if has_enrichment else 'o/s/q'}.[/dim]")
+                continue
+
+            if ch == "n":
+                candidate.decision = "new"
+                rprint(f"  [green]Using new enrichment[/green] for {entry.lemma}")
+                break
+            elif ch == "o":
+                candidate.decision = "old"
+                rprint(f"  [green]Keeping old back[/green] for {entry.lemma}")
+                break
+            elif ch == "e":
+                editor_cmd = os.environ.get("EDITOR") or os.environ.get("VISUAL")
+                if not editor_cmd:
+                    rprint("  [yellow]$EDITOR not set — skipping edit.[/yellow]")
+                    continue
+                edit_text = format_edit_with_reference(entry, candidate.notes[0].back_html)
+                with tempfile.NamedTemporaryFile(
+                    mode="w", suffix=".txt", prefix=f"ankivibes_import_{entry.lemma}_", delete=False
+                ) as f:
+                    f.write(edit_text)
+                    tmp_path_str = f.name
+                try:
+                    result = subprocess.run([editor_cmd, tmp_path_str])
+                    if result.returncode != 0:
+                        rprint("  [red]Editor exited with an error.[/red]")
+                        continue
+                    edited_text = Path(tmp_path_str).read_text(encoding="utf-8")
+                finally:
+                    Path(tmp_path_str).unlink(missing_ok=True)
+                new_defs = text_to_definitions(edited_text)
+                entry.definitions = new_defs
+                if new_defs and new_defs[0].get("pos"):
+                    entry.pos = new_defs[0]["pos"]
+                entry.edited = True
+                entry.updated_at = datetime.now(timezone.utc).isoformat()
+                store.save(entry)
+                from ankivibes.anki_bridge import format_card_back
+                candidate.new_back_html = format_card_back(new_defs, entry.pos)
+                candidate.decision = "edit"
+                rprint(f"  [green]Edited[/green] {entry.lemma}")
+                break
+            elif ch == "s":
+                candidate.decision = "skip"
+                skipped_count += 1
+                rprint(f"  [dim]Skipped[/dim] {entry.lemma}")
+                break
+            elif ch == "q":
+                rprint("  Quitting review.")
+                break
+
+        if ch == "q":
+            break
+
+    # Summary
+    rprint()
+    decided = [c for c in candidates if c.decision in ("new", "old", "edit")]
+    summary = Table(title="Import Review Summary")
+    summary.add_column("Outcome", style="bold")
+    summary.add_column("Count", justify="right")
+    summary.add_row("to migrate", str(len(decided)), style="green")
+    summary.add_row("skipped", str(skipped_count), style="dim")
+    console.print(summary)
+
+    if not decided:
+        rprint("[dim]Nothing to migrate.[/dim]")
+        return
+
+    if not typer.confirm(f"Migrate {len(decided)} card(s) to AnkiVibes note type?", default=False):
+        rprint("[dim]Cancelled.[/dim]")
+        return
+
+    # -- Phase E: Migrate ------------------------------------------------------
+    results = migrate_notes(source_collection, cfg.anki.backup_dir, candidates)
+
+    now = datetime.now(timezone.utc).isoformat()
+    for res in results:
+        res.entry.anki_note_id = res.anki_note_id
+        res.entry.last_synced_at = now
+        res.entry.status = STATUS_INSERTED
+        res.entry.updated_at = now
+        store.save(res.entry)
+
+    rprint(f"\n[green]Migrated {len(results)} card(s) to AnkiVibes note type.[/green]")
+
+    # -- Phase F: Update config ------------------------------------------------
+    cfg.anki.collection_path = source_collection
+    cfg.anki.deck_name = source_deck
+    cfg_module.save(cfg)
+    rprint(f"Config updated: collection_path → {source_collection}")
