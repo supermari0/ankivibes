@@ -208,7 +208,8 @@ ankivibes import-deck
    - `[e]` — open `$EDITOR` with the enriched definitions pre-filled and the
      old back shown as comments at the top for reference
    - `[s]` — skip this card (it will not be migrated)
-   - `[q]` — quit the review loop (unreviewed cards are not migrated)
+   - `[q]` — quit the review loop (unreviewed cards are not migrated; re-run
+     `import-deck` to continue where you left off)
 
 5. **Migration** — changes the note type from `Basic` to `AnkiVibes` in place.
    Review history (scheduling, ease, intervals) is preserved because Anki ties
@@ -266,7 +267,7 @@ to point at your existing collection.
 | `ankivibes enrich --top N` | Enrich only the top N by frequency |
 | `ankivibes enrich --force` | Re-fetch definitions for already-enriched words |
 | `ankivibes show LEMMA` | Show full details for a word (definitions, examples, metadata) |
-| `ankivibes edit LEMMA` | Edit a word's definitions in `$EDITOR` |
+| `ankivibes edit LEMMA` | Edit a word's definitions in `$EDITOR` (requires `$EDITOR` to be set) |
 | `ankivibes anki` | Interactive card review and insertion into Anki |
 | `ankivibes anki --dry-run` | Preview the card queue without writing anything |
 | `ankivibes import-deck` | Import an existing Anki deck into ankivibes management |
@@ -285,7 +286,7 @@ directly, but you can.
 
 ```toml
 store_path = "/Users/yourname/.local/share/ankivibes/words.jsonl"
-corpus_path = "/path/to/diccionario_frecuencias_corpes_alfa.tsv"
+corpus_path = "/path/to/ankivibes/data/diccionario_frecuencias_corpes_alfa.tsv"  # auto-resolved; ships in repo
 contact_email = "you@example.com"    # set on first run of `enrich`
 
 [anki]
@@ -303,7 +304,7 @@ auto_sync = true
 | `anki.collection_path` | `anki` or `import-deck` first run | Path to the `.anki2` collection file |
 | `anki.deck_name` | `anki` or `import-deck` first run | Target deck name for card insertion |
 | `anki.backup_dir` | default | Where timestamped `.anki2` backups are written |
-| `anki.auto_sync` | default | Whether to check for drift before inserting new cards |
+| `anki.auto_sync` | default | Whether to check for drift before inserting new cards (planned for Phase 4c — stored but not yet active) |
 
 The `anki.collection_path` and `anki.deck_name` fields are populated
 automatically by the profile/deck selection flow — no manual path entry needed.

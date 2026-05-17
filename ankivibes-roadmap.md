@@ -86,694 +86,144 @@ directly before attempting single-token lemmatization. The pipeline should:
 
 ## Phase 1 — Project Foundation ✓
 
-**Goal:** A working CLI skeleton. No real features yet, but the project
-structure, tooling, and testing infrastructure are solid enough to build on.
-
-### Deliverables
-
-- `ankivibes/` repo initialized with `uv init`
-- `pyproject.toml` with:
-  - `[project.scripts]` entry point: `ankivibes = "ankivibes.cli:app"`
-  - dev dependencies: pytest, pytest-cov
-  - `uv` lockfile committed
-- `src/ankivibes/` package layout (src layout prevents import confusion)
-- Typer app with stub subcommands: `ingest`, `list`, `enrich`, `anki`
-  - Each stub prints "not yet implemented" and exits 0
-- `--version` flag prints version from `pyproject.toml`
-- `README.md` with install instructions: `uv tool install .` or `uv run ankivibes`
-
-### Project Structure
-
-```
-ankivibes/
-├── pyproject.toml
-├── uv.lock
-├── data/
-│   └── diccionario_frecuencias_corpes_alfa.tsv
-├── src/
-│   └── ankivibes/
-│       ├── __init__.py
-│       ├── cli.py          # Typer app, subcommand registration
-│       ├── config.py       # Config loading/saving (~/.config/ankivibes/config.toml)
-│       ├── corpus.py       # FrequencyCorpus protocol + CORPESCorpus implementation
-│       ├── lemmatizer.py   # Lemmatizer protocol + SpacyLemmatizer implementation
-│       ├── pipeline.py     # Ingest pipeline: normalize → lemmatize → score
-│       ├── store/
-│       │   ├── __init__.py
-│       │   ├── protocol.py # WordStore protocol
-│       │   ├── models.py   # WordEntry dataclass, status constants
-│       │   └── jsonl.py    # JSONL implementation
-│       ├── pytionary/      # Placeholder; replaced by pytionary package in Phase 3
-│       └── anki_bridge.py  # Populated in Phase 4
-└── tests/
-    ├── conftest.py
-    ├── test_corpus.py
-    ├── test_lemmatizer.py
-    ├── test_pipeline.py
-    └── test_store.py
-```
-
-### Testing
-
-- `pytest` runs with zero failures out of the gate (even against stubs)
-- Confirm `uv run pytest` works in CI-like conditions
-- Test that each subcommand exits 0 and prints expected placeholder text
-
-### Verifiable
-
-```sh
-uv run ankivibes --help        # shows all subcommands
-uv run ankivibes --version     # prints version
-uv run ankivibes ingest        # prints "not yet implemented"
-uv run pytest                  # all tests pass
-```
+Skeleton CLI: `uv init`, `src/ankivibes/` package layout, Typer app with stub
+subcommands (`ingest`, `list`, `enrich`, `anki`), `--version` flag, pytest
+infrastructure.
 
 ---
 
 ## Phase 2 — Ingest Pipeline ✓
 
-**Goal:** `ankivibes ingest` reads a plaintext word list, lemmatizes each word,
-scores it by corpus frequency, and saves results to JSONL storage. `ankivibes
-list` shows stored words.
+`ankivibes ingest FILE`, `ankivibes list`, `ankivibes review` implemented.
 
-### Features
+**WordEntry fields** (JSONL at `~/.local/share/ankivibes/words.jsonl`):
 
-#### `ankivibes ingest <file>`
+| Field | Description |
+|---|---|
+| `id` | sha256[:16] of (normalized, lemma) — stable across re-ingests |
+| `raw` | Original input |
+| `normalized` | Lowercased, stripped |
+| `lemma` | spaCy lemma |
+| `frequency` | CORPES DP score (stored as string for Decimal precision) |
+| `status` | `ready` \| `needs_review` \| `enriched` \| `inserted` \| `skipped` |
+| `reason` | Non-null for `needs_review` (e.g. `no_frequency`, `no_frequency_multiword`) |
+| `source` | Filename, `"apple_notes"`, or `"anki_import:<deck>"` |
+| `pos` | Part of speech (populated during enrich) |
+| `definitions` | List of dicts (populated during enrich) |
+| `edited` | bool — True if manually edited via `ankivibes edit` (added Phase 3c) |
+| `anki_note_id` | int \| None — written back after Anki insertion (added Phase 4a) |
+| `last_synced_at` | ISO 8601 UTC — updated on successful sync (added Phase 4a) |
+| `created_at` / `updated_at` | ISO 8601 UTC |
+| `schema_version` | Integer, incremented on breaking changes |
 
-- Reads one word (or phrase) per line from `<file>`
-- Normalizes: strip whitespace, lowercase, deduplicate
-- Lemmatizes via spaCy `es_core_news_sm`
-- Looks up lemma in CORPES TSV; words not found land in `needs_review`
-- Multi-word inputs: check corpus for exact multi-word lemma match first
-  (e.g., "por favor" is in the CORPES TSV); if matched, treat as `ready`.
-  If no match, send to `needs_review` with reason `no_frequency_multiword`
-- Merges into JSONL store (`~/.local/share/ankivibes/words.jsonl` by default):
-  - New words added; existing words updated (frequency may change if corpus
-    is refreshed); `inserted` status preserved across re-ingests
-- Prints a summary table using Rich: counts of ready / needs_review / already
-  inserted
-
-#### `ankivibes list`
-
-- Reads JSONL store, prints a Rich table sorted by frequency descending
-- Flags: `--status` (filter by ready/needs_review/inserted/enriched),
-  `--top N` (default 20), `--all`
-
-#### `ankivibes review`
-
-- Lists `needs_review` entries with their reason codes
-- Future: interactive flow to manually correct lemmas or skip words
-
-### Configuration
-
-Config lives at `~/.config/ankivibes/config.toml` (XDG-compliant). Store
-path and corpus path are configurable here. The contact email for Wiktionary
-API requests is prompted lazily — only when `ankivibes enrich` is first run
-(see Phase 3).
-
-### WordEntry Model (JSONL)
-
-Fields carried over from frelanki's design:
-
-```
-id            — sha256[:16] of (normalized, lemma), stable across re-ingests
-raw           — original input string
-normalized    — lowercased, stripped
-lemma         — spaCy lemma
-frequency     — CORPES DP score (stored as string for Decimal precision)
-status        — ready | needs_review | enriched | inserted | skipped
-reason        — non-null for needs_review (e.g., no_frequency, multi_word)
-source        — filename or "apple_notes"
-pos           — part of speech (populated during enrich)
-definitions   — list of dicts (populated during enrich)
-created_at    — ISO 8601 UTC
-updated_at    — ISO 8601 UTC
-schema_version — integer, incremented on breaking changes
-```
-
-### Testing
-
-- Unit tests for `CORPESCorpus`:
-  - Loads TSV, returns correct DP for known single-word lemma
-  - Returns correct DP for known multi-word lemma (e.g., "por favor")
-  - Returns `None` for unknown lemma
-- Unit tests for `SpacyLemmatizer`:
-  - Lemmatizes single words correctly (e.g., "corriendo" → "correr")
-  - Multi-word input handled without crashing
-  - Skipping spaCy download in CI: use a small fixture or mock
-- Unit tests for `pipeline.py`:
-  - Given a list of raw words, returns correct `ready` and `needs_review` splits
-  - Deduplication works
-- Unit tests for `jsonl.py`:
-  - Round-trip: write entries, read back, compare
-  - Merge preserves `inserted` status
-  - Schema version written to metadata line
-- Integration test: ingest a 10-word fixture file, assert store has expected entries
-
-### Implementation notes
-
-- `es_core_news_sm` installed via `python -m spacy download` (requires pip in
-  venv: `uv pip install pip`). Model is a direct dependency in `pyproject.toml`
-  via the official spaCy release URL.
-- Config writing (`save()`) is stubbed — deferred to Phase 3 when the contact
-  email prompt is needed. Reading uses stdlib `tomllib`.
-- `list` sorts by DP ascending (lower DP = more evenly distributed = more
-  common), so the most-used words appear first.
-- `tests/fixtures/corpus_sample.tsv` is a small hand-crafted TSV used in unit
-  tests so the full 33 MB CORPES file is never read during `pytest`.
-- `SpacyLemmatizer` tests are skipped automatically if `es_core_news_sm` is not
-  installed; all other tests use `FakeLemmatizer` or `DictLemmatizer` from
-  `conftest.py`.
-
-### Verifiable
-
-```sh
-uv run ankivibes ingest tests/fixtures/sample_words.txt
-uv run ankivibes list
-uv run ankivibes list --status needs_review
-uv run pytest                # all tests pass (39 tests)
-```
+Config at `~/.config/ankivibes/config.toml`. Multi-word inputs are checked
+against the corpus before single-token lemmatization; no corpus match →
+`needs_review` with reason `no_frequency_multiword`.
 
 ---
 
 ## Phase 3a — pytionary Library (Separate Repository) ✓
 
-**Goal:** Build and publish the Wiktionary REST client as a standalone library.
-
-The library lives at `~/code/pytionary` and is published at
-`https://github.com/supermari0/pytionary`.
-
-### What was built
-
-- `src/pytionary/` package (zero external dependencies, stdlib only):
-  - `client.py` — `WiktionaryClient` with configurable rate limiting (default
-    10 req/s via `time.monotonic`), 429 retry with `Retry-After` header, and
-    proper User-Agent (`pytionary/0.1.0 (url; email)`)
-  - `parser.py` — `parse_spanish_definitions()` extracts definitions from the
-    Wiktionary REST API JSON response, strips HTML, parses examples with
-    translations
-  - `models.py` — `Definition`, `Example` (frozen dataclasses, generic names),
-    `ClientError` (frozen dataclass + Exception)
-  - `_version.py` — single source of truth for version string
-- `contact_email` required at construction — Wikimedia needs a real contact
-  address in the User-Agent
-- Rate limiting note: Wiktionary/Wikimedia rate-limit policies are not clearly
-  documented in one place; 10 req/s is a conservative default. README advises
-  lowering for batch jobs.
-- 42 unit tests (mocked HTTP via `unittest.mock.patch`, fixtures from real API
-  responses for "correr" and "ser"), 1 opt-in integration test
-  (`PYTIONARY_INTEGRATION=1`)
-- Apache 2.0 license, `uv`-based project with `uv_build` backend
+Standalone library at https://github.com/supermari0/pytionary. Provides
+`WiktionaryClient` (rate limiting at 10 req/s default, 429 retry with
+`Retry-After`, proper User-Agent; `contact_email` required at construction)
+and `parse_spanish_definitions()` (extracts definitions, strips HTML, parses
+examples with translations). Models: `Definition`, `Example`, `ClientError`.
 
 ---
 
-## Phase 3b — Add pytionary to ankivibes + `enrich` command ✓
+## Phase 3b — Add pytionary + `enrich` command ✓
 
-**Goal:** Wire pytionary into ankivibes as a dependency and implement the
-`ankivibes enrich` command.
-
-### Adding to ankivibes
-
-Add pytionary to ankivibes' dependencies:
+pytionary added as git dependency:
 
 ```toml
-# pyproject.toml
-[project]
-dependencies = [
-  # Install directly from git until/unless published to PyPI:
-  "pytionary @ git+https://github.com/supermari0/pytionary.git",
-]
+"pytionary @ git+https://github.com/supermari0/pytionary.git"
 ```
 
-If and when you want to publish to PyPI, the main requirements are: a unique
-package name, a `README.md`, and running `uv publish`. It is low-friction but
-optional — the git URL approach works fine for personal tools.
+`ankivibes enrich`: prompts for contact email on first run (saved to config),
+enriches all `ready` entries from the store, sets status → `enriched`.
+Flags: `--top N`, `--force`.
 
-### `ankivibes enrich`
-
-On the first run of `enrich`, if no contact email is configured, ankivibes
-prompts before doing anything else:
-
-```
-Wiktionary requests require a contact email for the User-Agent header.
-Contact email: _
-Saved to ~/.config/ankivibes/config.toml
-```
-
-Then it proceeds to enrich:
-
-- Reads all `ready` entries from the store
-- Skips entries that already have definitions (re-run is idempotent)
-- Fetches definitions for each lemma from Wiktionary
-- Stores definitions, examples, and POS back to the entry; status → `enriched`
-- Prints a progress bar (Rich) and a summary
-- Errors (404, network) logged per-word; does not abort the whole run
-- Flag: `--force` re-fetches even for already-enriched entries
-- Flag: `--top N` only enrich the top N by frequency (useful for incremental runs)
-
-### Testing (in ankivibes)
-
-- Unit tests for the enrich command using a mocked `WiktionaryClient`
-- Asserts that `enriched` status is set after a successful fetch
-- Asserts that errors increment the skipped counter without crashing
-
-### Verifiable
-
-```sh
-uv run ankivibes enrich --top 5
-uv run ankivibes list --status enriched
-uv run pytest
-```
-
----
-
-## Manual Review Gate (blocks all later phases)
-
-Before proceeding with Phase 3.5 or any later phase, the user must:
-
-1. Inspect the `enrich` code and tests
-2. Run `ankivibes enrich` on a real input list (ingest first, then enrich)
-3. Verify enriched entries look correct via `ankivibes list --status enriched`
-4. Explicitly confirm the enrich command is working correctly
-
-Claude must not proceed with Phase 3.5 or later until this confirmation is given.
+> **Manual review gate** *(passed)*: `enrich` was run on real data and
+> confirmed working before proceeding.
 
 ---
 
 ## Phase 3c — Inspect and Edit Enriched Words ✓
 
-**Goal:** Make enriched data visible and editable. After enrichment, the user
-needs to see what definitions, POS, and examples were fetched, and fix or
-supplement them where Wiktionary data is incomplete.
+`ankivibes show LEMMA` and `ankivibes edit LEMMA` implemented. `edited`
+boolean field added to `WordEntry` (default `False`, backwards-compatible).
 
-### `ankivibes show <lemma>`
-
-Displays a Rich panel with the full detail of a word entry: status, POS,
-frequency, source, all definitions with examples, timestamps, and whether
-the entry has been manually edited.
-
-- [ ] Also display `normalized` in the panel — useful for catching lemmatization
-  oddities (e.g., "viga" lemmatized to "ver"). Raw input is already stored, so
-  this is a one-line addition.
-- [ ] Consider a fuller `edit` experience beyond definitions: editing the lemma
-  itself (to correct bad lemmatization), the normalized form, or POS. UX needs
-  thought — likely a structured prompt or a YAML/TOML snippet in `$EDITOR`
-  covering all editable fields, with the current `edit` command's definition
-  format as a subset.
-
-### `ankivibes edit <lemma>`
-
-Opens the word's definitions in `$EDITOR` using a simple structured text
-format. On save, parses edits back into the store and sets `edited = True`
-on the entry. Requires `$EDITOR` to be set.
-
-### `edited` field on WordEntry
-
-A boolean field (`default False`) added to `WordEntry` to distinguish
-machine-enriched entries from human-touched ones. Backwards-compatible with
-existing JSONL data (missing field defaults to `False`).
-
-### Verifiable
-
-```sh
-uv run ankivibes show correr           # full detail panel
-uv run ankivibes edit correr           # opens in $EDITOR
-uv run ankivibes show correr           # verify edits, edited=yes
-uv run pytest                          # all tests pass (55 tests)
-```
+Open items:
+- [ ] Show `normalized` in `show` panel (useful for catching bad lemmatization,
+  e.g. "viga" lemmatized to "ver")
+- [ ] Fuller `edit` covering lemma, normalized, and POS — not just definitions
 
 ---
 
 ## Phase 3.5 — Static Type Checking ✓
 
-- [ ] Add `mypy` or `pyright` as a dev dependency
-- [ ] Run the type checker across `src/` and fix any errors
-- [ ] Add a `uv run mypy src` (or `pyright`) step to the development workflow in `README.md`
-- Note: `py.typed` was left in place from project init anticipating this — no changes needed there
+mypy added as dev dependency. `uv run mypy src/` passes cleanly.
 
 ---
 
 ## Phase 4a — Anki Bridge Foundation & Card Export ✓
 
+`ankivibes anki` implemented: interactive review-and-insert flow (`[a]ccept`,
+`[e]dit`, `[s]kip`, `[q]uit`), staged insertion with confirmation, timestamped
+backup before any write to Anki.
 
-**Goal:** Define the AnkiVibes note type, build card formatting and backup
-infrastructure, and implement the interactive review-and-insert flow via
-`ankivibes anki`. This is the **fresh deck** path — no existing cards to
-reconcile.
-
-### AnkiVibes Note Type
-
-ankivibes uses a custom Anki note type called `AnkiVibes` instead of the
-built-in `Basic` type. The custom type enables reliable sync by giving each
-note a dedicated `ankivibes_id` field.
-
-**Fields:**
+**AnkiVibes note type** (created automatically on first run if absent):
 
 | Field | Purpose |
 |---|---|
-| `Front` | Spanish lemma (e.g., "correr") |
-| `Back` | Definitions and example sentences, formatted as HTML |
-| `ankivibes_id` | The stable `sha256[:16]` ID from the ankivibes store. Hidden from the card face but queryable for sync |
+| `Front` | Spanish lemma |
+| `Back` | Definitions + examples as HTML |
+| `ankivibes_id` | Stable sha256[:16] ID — hidden from card face, queryable for sync |
 
-**Card template:** The card template renders `Front` and `Back` identically to
-Anki's built-in Basic type — no visual difference when studying. The
-`ankivibes_id` field is not shown on either side of the card.
+Card template renders identically to Basic. Every inserted note gets the
+`ankivibes` tag.
 
-**Tag:** Every note inserted by ankivibes gets an `ankivibes` tag. This makes
-it easy to filter ankivibes-managed cards in Anki's browser (`tag:ankivibes`
-or `note:AnkiVibes`).
+`WordEntry` gained `anki_note_id` (int | None) and `last_synced_at`
+(str | None) fields.
 
-**Creation:** The `AnkiVibes` note type is created automatically on the first
-run of `ankivibes anki` if it doesn't already exist. No manual setup needed.
-
-### WordEntry Changes
-
-Add two new fields to `WordEntry`:
-
-- `anki_note_id` — `int | None`, the Anki note ID written back after
-  insertion. Used by sync to locate the note in the collection.
-- `last_synced_at` — `str | None`, ISO 8601 UTC timestamp of the last
-  successful sync for this entry. Used to detect staleness.
-
-These fields default to `None` and are backwards-compatible with existing
-JSONL data.
-
-### `ankivibes anki`
-
-Interactive card review and insertion. This is the most user-facing part of
-the tool, so the UX matters.
-
-**Flow:**
-
-1. **Auto-sync check** (enabled by default, see Phase 4c). Before showing the
-   review queue, scan all ankivibes-managed cards in Anki for drift against
-   the store. If drift is found, show a summary and offer to resolve before
-   proceeding. If no drift, proceed silently. Skipped if `auto_sync = false`
-   in config.
-2. Load all `enriched` entries sorted by frequency descending.
-3. For each card, display a Rich panel showing the card preview:
-
-```
-┌─────────────────────────────────────────────────┐
-│ [1/12]  correr  (verb)  freq: 0.892             │
-├─────────────────────────────────────────────────┤
-│ FRONT                                           │
-│   correr                                        │
-├─────────────────────────────────────────────────┤
-│ BACK                                            │
-│   to run; to flow                               │
-│                                                 │
-│   "El río corre hacia el mar."                  │
-│   → "The river flows toward the sea."           │
-└─────────────────────────────────────────────────┘
-  [a] accept   [e] edit   [s] skip   [q] quit
-```
-
-4. On `[e]dit`, open the card's back content in `$EDITOR` (or fall back to
-   an inline Typer prompt if no editor is configured). Re-display the card
-   after editing.
-5. On `[a]ccept`, stage the card for insertion (do not write to Anki yet).
-6. After the review loop ends (or `[q]`, or all cards reviewed):
-   - Show a summary: N cards staged, M skipped
-   - Prompt: "Insert N cards into your Anki deck? [y/N]"
-7. If confirmed:
-   - **Create a timestamped backup** of the `.anki2` file before touching it
-   - Open the Anki collection using the `anki` library
-   - Create the `AnkiVibes` note type if it doesn't exist
-   - Insert staged notes into the target deck with the `ankivibes` tag
-   - Write `anki_note_id` and `last_synced_at` back to the store
-   - Mark inserted entries as `inserted` in the store
-   - Print confirmation with note IDs
-
-**Configuration** (in `config.toml`):
-
-```toml
-[anki]
-collection_path = "/Users/you/Library/Application Support/Anki2/User 1/collection.anki2"
-deck_name = "Spanish"
-backup_dir = "~/.local/share/ankivibes/backups"
-auto_sync = true   # run sync check before inserting new cards (see Phase 4c)
-```
-
-Note: `note_type`, `front_field`, and `back_field` are no longer configurable
-— ankivibes always uses its own `AnkiVibes` note type with fixed field names.
-This simplifies sync and avoids misconfiguration.
-
-**Safety rules:**
-
-- If Anki is currently open, the `.anki2` file may be locked. Detect this and
-  warn the user before attempting to write. (The `anki` library may handle
-  this, but add an explicit check.)
-- The backup is created unconditionally before the first write — even if the
-  user has run `ankivibes anki` before.
-- Never delete backups automatically; let the user manage them.
-
-### Testing
-
-- Unit tests for the card formatting / preview logic (pure functions)
-- Unit tests for backup creation (mock filesystem)
-- Unit test for AnkiVibes note type creation: assert correct fields, card
-  template, and that `ankivibes_id` is not visible on the card face
-- Unit test for Anki note construction: given a `WordEntry`, assert the
-  resulting note has correct `Front`, `Back`, and `ankivibes_id` fields
-- Integration test: create a temporary `.anki2` file, insert a note, reopen
-  and verify the note exists with the correct fields and `ankivibes` tag
-- Do not test interactive prompts directly; test the underlying service
-  functions that the prompts call
-
-### Verifiable
-
-```sh
-uv run ankivibes list --status enriched
-uv run ankivibes anki --dry-run   # preview without writing
-uv run ankivibes anki             # full interactive flow
-uv run pytest
-```
+**Safety:** Detects Anki open (locked collection) before writing. Backup
+created unconditionally before any write.
 
 ---
 
 ## Phase 4a.1 — Anki Profile Setup UX ✓
 
-**Goal:** Remove the manual step of creating an Anki profile and locating the
-`.anki2` file. Today, the user must: open Anki, create a profile, find the
-resulting path under `~/Library/Application Support/Anki2/<Profile>/collection.anki2`,
-and paste it into ankivibes config. This is error-prone and undiscoverable.
-
-**Background:** When `ankivibes anki` is run for the first time and
-`collection_path` is not configured, the tool should offer to handle setup
-automatically instead of prompting for a raw file path.
-
-### Deliverables
-
-- **Profile discovery** — scan `~/Library/Application Support/Anki2/` (macOS)
-  for existing profiles and their collection files. If exactly one profile
-  exists, offer to use it. If multiple exist, present a numbered menu. If none
-  exist, offer to create one.
-
-- **Profile creation** — if no profiles exist (or the user wants a new one),
-  ankivibes should be able to create the profile directory and an empty
-  `collection.anki2` without requiring Anki to be open. The `anki` Python
-  library creates a valid collection when given a path to a non-existent file,
-  so this is straightforward.
-
-- **Auto-configure** — once a collection is selected or created, save
-  `collection_path` to `config.toml` automatically, with no manual path entry.
-
-- **Cross-platform note** — Linux stores Anki data under `~/.local/share/Anki2/`
-  and Windows under `%APPDATA%\Anki2\`. The discovery logic should use a
-  `find_anki_base_dir()` helper that returns the platform-appropriate path so
-  other platforms can be supported later without touching the setup flow.
-
-### Flow (first run, macOS, no existing profiles)
-
-```
-$ ankivibes anki
-No Anki collection configured.
-No existing Anki profiles found at ~/Library/Application Support/Anki2/.
-
-Create a new Anki profile? [Y/n]: y
-Profile name [Spanish]: Spanish
-Created new Anki profile at:
-  ~/Library/Application Support/Anki2/Spanish/collection.anki2
-Saved to ~/.config/ankivibes/config.toml
-
-[continues to card review...]
-```
-
-### Flow (first run, existing profiles found)
-
-```
-$ ankivibes anki
-No Anki collection configured.
-Found Anki profiles:
-  1. User 1  (~/Library/Application Support/Anki2/User 1/collection.anki2)
-  2. Spanish (~/Library/Application Support/Anki2/Spanish/collection.anki2)
-  3. Create new profile
-
-Select profile [1]: 2
-Saved to ~/.config/ankivibes/config.toml
-
-[continues to card review...]
-```
-
-### Testing
-
-- Unit test for `find_anki_base_dir()` — returns correct path per platform
-- Unit test for profile discovery — given a mock directory structure, returns
-  expected profile list
-- Unit test for profile creation — creates the directory and a valid
-  `collection.anki2` file
-- Do not test the interactive prompt directly; test the underlying functions
-
-### Verifiable
-
-```sh
-rm ~/.config/ankivibes/config.toml   # reset config
-uv run ankivibes anki --dry-run      # triggers setup flow
-```
+Profile discovery and creation built into `ankivibes anki` first run.
+`find_anki_base_dir()` returns `~/Library/Application Support/Anki2/` (macOS)
+or `~/.local/share/Anki2/` (Linux). Presents numbered menu of discovered
+profiles; can create a new one. Collection path saved to config automatically.
 
 ---
 
-## Phase 4b — Import from Existing Anki Deck ✓ (implemented, pending real-deck test)
+## Phase 4b — Import from Existing Anki Deck ✓ *(pending real-deck test)*
 
-**Goal:** Import an existing Anki deck into ankivibes management. Card fronts
-are run through the full ingest pipeline (lemmatization, frequency scoring),
-enriched via Wiktionary, and the user interactively compares old card backs
-against the enriched versions. Cards are migrated in-place from `Basic` to
-`AnkiVibes` note type, preserving review history.
+`ankivibes import-deck` implemented. Reads `Basic` notes from a selected deck,
+runs fronts through the ingest pipeline (lemmatization + frequency scoring),
+enriches via Wiktionary, presents side-by-side interactive review (old card
+back vs. Wiktionary enrichment), then migrates note type from `Basic` to
+`AnkiVibes` in-place — preserving review history. Already-migrated notes are
+skipped (idempotent). Quit mid-review (`[q]`) and re-run safely; only
+reviewed+accepted cards are migrated each session, so natural quitting serves
+as the batching mechanism.
 
-### Design decisions (resolved)
+**Design decisions:**
+- **Direct `.anki2` access** — same as Phase 4a
+- **Review history preserved** — Anki ties scheduling to the card, not the
+  note type; changing `note.mid` doesn't affect scheduling data
+- **Cards without frequency** — imported as `needs_review`; still migrated
+  with old back intact
+- **Batching** — no `--limit` flag; quit mid-review and re-run (idempotent)
 
-- **Collection format:** Direct `.anki2` file access (same as Phase 4a).
-- **Deck scope:** Single deck, selected interactively via a guided menu.
-- **Matching:** No fuzzy or exact matching needed. Card fronts go through
-  `ingest_words()` — the same normalization/lemmatization/frequency pipeline
-  used by `ankivibes ingest`. The pipeline output links back to source notes
-  via the normalized form.
-- **Review history:** Migrated in-place within the source collection. Anki
-  ties scheduling data to the card, not the note type, so changing from
-  `Basic` to `AnkiVibes` preserves all review state.
-- **Cards without frequency:** Imported as `needs_review` entries. Their Anki
-  notes still get migrated to `AnkiVibes` type with the old card back intact.
+Flags: `--dry-run`, `--skip-enrich`, `--collection PATH`, `--deck NAME`.
 
-### `ankivibes import-deck`
-
-Top-level command (not a subcommand of `anki`) to avoid restructuring the
-existing `ankivibes anki` command into a Typer subapp.
-
-```
-ankivibes import-deck [--dry-run] [--skip-enrich] [--collection PATH] [--deck NAME]
-```
-
-**Flow:**
-
-1. **Source selection** — guided profile/deck picker using the same discovery
-   functions from Phase 4a.1 (`find_anki_base_dir`, `discover_profiles`,
-   `format_profile_menu`). Then list decks in the chosen collection and
-   present a numbered menu. `--collection` and `--deck` flags skip the
-   interactive selection.
-
-2. **Read & ingest** — open the collection, read all `Basic` notes in the
-   selected deck (skip notes already using `AnkiVibes` type for idempotency).
-   Strip HTML from front fields. Feed all fronts through `ingest_words()` with
-   `source="anki_import"`. Build a mapping linking each `WordEntry` back to
-   its source Anki note(s) via the normalized front. Merge each entry into the
-   store via `store.merge()`. Print a summary.
-
-3. **Enrich** (skippable with `--skip-enrich`) — run `enrich_one()` on all
-   `ready` entries, exactly like `ankivibes enrich`. Progress bar via Rich.
-   Entries that fail enrichment still participate in the review step.
-
-4. **Interactive review** — for each unique word, display a Rich panel
-   comparing the old card back against the Wiktionary enrichment:
-
-   ```
-   ┌──────────────────────────────────────────────────┐
-   │ [1/247]  correr  (verb)  freq: 0.892             │
-   ├──────────────────────────────────────────────────┤
-   │ EXISTING CARD BACK                               │
-   │   to run, to flow, to rush                       │
-   ├──────────────────────────────────────────────────┤
-   │ WIKTIONARY ENRICHMENT                            │
-   │   to run; to flow                                │
-   │                                                  │
-   │   "El río corre hacia el mar."                   │
-   │   → "The river flows toward the sea."            │
-   └──────────────────────────────────────────────────┘
-     [n] use new   [o] keep old   [e] edit   [s] skip   [q] quit
-   ```
-
-   - **Enriched entries:** full options — `[n]ew`, `[o]ld`, `[e]dit`,
-     `[s]kip`, `[q]uit`
-   - **Non-enriched entries:** `[o]ld`, `[s]kip`, `[q]uit` only
-   - `[e]dit` opens `$EDITOR` with enriched definitions in the standard edit
-     format (reusing `editor.py`), with the old card back shown as comment
-     lines at the top for reference
-   - If multiple notes share the same front, a warning is shown and the
-     decision applies to all
-
-5. **Migrate** — back up the collection, then for each non-skipped entry:
-   change the note's model ID to `AnkiVibes`, rebuild the fields list
-   (`[Front, Back, ankivibes_id]`), update the Back field if the user chose
-   `new` or `edit`, add the `ankivibes` tag, and call `col.update_note()`.
-   Update the store: `status = inserted`, `anki_note_id`, `last_synced_at`.
-
-6. **Update config** — set `collection_path` and `deck_name` to the imported
-   collection/deck. This means ankivibes manages cards in the old collection
-   going forward.
-
-**Safety:**
-
-- **Create a timestamped backup** of the `.anki2` file before any writes
-- Idempotent: running import twice finds no new `Basic` candidates
-- Notes already using `AnkiVibes` type are skipped during read
-- `--dry-run` shows the full ingest/enrich summary without writing
-
-### Testing
-
-- Unit tests for `build_import_candidates` (linking, deduplication, AnkiVibes
-  filtering), `format_import_preview` (enriched and non-enriched cases), and
-  `format_edit_with_reference` (output format)
-- Integration tests (require `anki` package):
-  - `read_deck_notes` — create collection with Basic notes, read back
-  - `list_decks` — create collection with multiple decks, verify listing
-  - `migrate_notes` — verify note type changes, field mapping, tag addition
-  - `migrate_notes` — verify review history preserved (card scheduling data
-    unchanged after migration)
-  - `migrate_notes` — verify Back updated when decision is "new", preserved
-    when decision is "old"
-  - Idempotency — running import twice finds no new candidates
-  - Full pipeline — read → ingest → enrich → migrate → verify final state
-- Do not test interactive prompts directly; test the underlying functions
-
-### Verifiable
-
-```sh
-uv run ankivibes import-deck --dry-run    # preview without modifying Anki
-uv run ankivibes import-deck              # full interactive flow
-uv run ankivibes list --status inserted
-uv run pytest
-```
-
-### Before proceeding to Phase 4c
-
-> **Stop.** The user must test `ankivibes import-deck` against their real
-> Spanish deck and confirm it works correctly before any further phases are
-> implemented. Do not proceed with Phase 4c until this confirmation is given.
-
-### Pre-import consideration: batching for large decks
-
-The current `import-deck` flow runs the entire deck through ingest, enrichment,
-and interactive review in a single session. For a large deck (hundreds of
-cards), this may be impractical — enrichment alone could take minutes, and
-reviewing all cards in one sitting is tedious.
-
-Before running `import-deck` on the real deck, consider adding a `--limit N`
-flag (or similar) to process N cards at a time, picking up where the previous
-session left off. The idempotency guarantee (already-migrated `AnkiVibes` notes
-are skipped) means batching is safe — running the command multiple times
-converges to a fully migrated deck. This should be designed and implemented
-before the real import run if the deck is large enough to warrant it.
+> **Stop. Before proceeding to Phase 4c:** Run `import-deck` against the real
+> Spanish deck and confirm it works correctly.
 
 ---
 
@@ -1035,33 +485,3 @@ pipeline code would not change.
 **React web UI.** A future phase could expose ankivibes as a FastAPI backend
 and add a React frontend for a more visual card-building workflow. The SQLite
 store and clean service layer from Phase 6 would make this straightforward.
-
----
-
-## Open Questions to Settle Early
-
-1. **TSV multi-word support:** Confirmed — the CORPES TSV contains multi-word
-   lemmas (e.g., "por favor"). The pipeline handles them as described in Phase 2.
-2. **Anki note type:** Use `Basic` (Front/Back) for v0. The front field is the
-   Spanish lemma; the back field is definitions and examples as formatted text.
-   A custom note type with separate fields is a future enhancement.
-3. **Contact email config:** Prompted lazily on first run of `ankivibes enrich`
-   only. Other commands work without it.
-
----
-
-## Appendix: Carrying Over from frelanki
-
-The following concepts from frelanki are worth keeping, cleaned up:
-
-| frelanki | ankivibes | Notes |
-|---|---|---|
-| `storage.py` JSONL format | `store/jsonl.py` | Keep schema; rename `STATUS_NEW` → consolidate with `STATUS_READY` |
-| `frequency.py` `CORPESCorpus` | `corpus.py` `CORPESCorpus` | Remove pandas dependency; use `csv` stdlib for lighter loading |
-| `input.py` pipeline | `pipeline.py` | Replace stanza with spaCy; clean up WordCandidate/WordResult split |
-| `wiktionary/` | `pytionary` repo | Extract verbatim, then add tests |
-| `config.py` (ini-based) | `config.py` (TOML-based) | Switch to `tomllib` (stdlib in 3.11+) for reading, `tomli-w` for writing |
-| argparse CLI | Typer CLI | Rewrite; same subcommands, better UX |
-| `merge_entry` logic | keep | This merge-on-re-ingest pattern is correct |
-| Stable ID (`sha256[:16]`) | keep | Deterministic IDs without a DB are clever; keep the pattern |
-
