@@ -6,7 +6,7 @@ from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .models import SCHEMA_VERSION, STATUS_INSERTED, WordEntry
+from .models import SCHEMA_VERSION, STATUS_ENRICHED, STATUS_INSERTED, WordEntry
 
 
 class JsonlStore:
@@ -85,7 +85,7 @@ class JsonlStore:
         return [self._from_dict(e) for e in entries]
 
     def merge(self, entry: WordEntry) -> WordEntry:
-        """Merge entry into store. Preserves `inserted` status on re-ingest."""
+        """Merge entry into store, preserving enriched/inserted work on re-ingest."""
         existing = self.get(entry.id)
         if existing is None:
             self.save(entry)
@@ -95,9 +95,14 @@ class JsonlStore:
         merged = asdict(entry)
         merged["created_at"] = existing.created_at
         merged["updated_at"] = now
-        if existing.status == STATUS_INSERTED:
-            merged["status"] = STATUS_INSERTED
+        if existing.status in {STATUS_ENRICHED, STATUS_INSERTED}:
+            merged["status"] = existing.status
             merged["reason"] = None
+            merged["pos"] = existing.pos
+            merged["definitions"] = existing.definitions
+            merged["edited"] = existing.edited
+            merged["anki_note_id"] = existing.anki_note_id
+            merged["last_synced_at"] = existing.last_synced_at
 
         result = self._from_dict(merged)
         self.save(result)

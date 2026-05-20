@@ -176,3 +176,13 @@ class TestSelectEntries:
 
         entries = select_entries_to_enrich(tmp_store)
         assert [e.lemma for e in entries] == ["low", "high", "none"]
+
+    def test_reingested_enriched_entry_not_selected(self, tmp_store: JsonlStore) -> None:
+        enriched = _enriched_entry("correr")
+        tmp_store.save(enriched)
+
+        re_ingested = _ready_entry("correr", "0.010")
+        tmp_store.merge(re_ingested)
+
+        entries = select_entries_to_enrich(tmp_store)
+        assert entries == []

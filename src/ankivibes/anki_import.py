@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from html import unescape
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -58,12 +59,17 @@ class MigrateResult:
 # HTML stripping
 # ---------------------------------------------------------------------------
 
+_BR_TAG_RE = re.compile(r"<\s*br\s*/?\s*>", re.IGNORECASE)
 _HTML_TAG_RE = re.compile(r"<[^>]+>")
 
 
 def strip_html(text: str) -> str:
     """Remove HTML tags from text. Simple regex approach for card fronts."""
-    return _HTML_TAG_RE.sub("", text).strip()
+    text = _BR_TAG_RE.sub("\n", text)
+    text = _HTML_TAG_RE.sub("", text)
+    text = unescape(text)
+    lines = [line.strip() for line in text.splitlines()]
+    return "\n".join(line for line in lines if line).strip()
 
 
 # ---------------------------------------------------------------------------
@@ -182,6 +188,34 @@ def format_import_preview(candidate: ImportCandidate, index: int, total: int) ->
             f"\n  Note: {len(candidate.notes)} cards share this front — all will be migrated together.",
             style="yellow",
         )
+
+    return Panel(body, expand=False)
+
+
+def format_import_edit_preview(entry: WordEntry, index: int, total: int) -> Panel:
+    """Rich panel previewing the edited card back before import saves it."""
+    body = Text()
+
+    header = f"[{index}/{total}]  {entry.lemma}"
+    if entry.pos:
+        header += f"  ({entry.pos})"
+    if entry.frequency:
+        header += f"  freq: {entry.frequency}"
+    body.append(header + "\n\n")
+
+    body.append("MERGED CARD BACK PREVIEW\n", style="bold")
+    if entry.definitions:
+        for defn in entry.definitions:
+            body.append(f"  {defn.get('text', '—')}\n")
+            for ex in defn.get("examples", []):
+                body.append(f'  "{ex.get("text", "")}"\n', style="italic")
+                tr = ex.get("translation")
+                if tr:
+                    body.append(f"  → {tr}\n", style="dim")
+    else:
+        body.append("  (no definitions)\n", style="dim")
+
+    body.append("\n  [a] accept edit   [r] reopen editor   [d] discard edit   [q] quit", style="dim")
 
     return Panel(body, expand=False)
 

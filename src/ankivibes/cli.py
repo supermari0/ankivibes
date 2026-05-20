@@ -534,6 +534,7 @@ def import_deck(
     import os
     import subprocess
     import tempfile
+    from dataclasses import replace
     from datetime import datetime, timezone
 
     import click
@@ -541,6 +542,7 @@ def import_deck(
     from .anki_import import (
         AnkiNoteInfo,
         build_import_candidates,
+        format_import_edit_preview,
         format_edit_with_reference,
         format_import_preview,
         list_decks,
@@ -646,8 +648,7 @@ def import_deck(
     needs_review = sum(1 for e in entries if e.status == "needs_review")
     rprint(f"Pipeline: {ready} ready, {needs_review} needs_review")
 
-    for entry in entries:
-        store.merge(entry)
+    entries = [store.merge(entry) for entry in entries]
 
     # Build candidates linking entries to source notes
     candidates = build_import_candidates(notes, entries)
@@ -731,31 +732,60 @@ def import_deck(
                     rprint("  [yellow]$EDITOR not set — skipping edit.[/yellow]")
                     continue
                 edit_text = format_edit_with_reference(entry, candidate.notes[0].back_html)
-                with tempfile.NamedTemporaryFile(
-                    mode="w", suffix=".txt", prefix=f"ankivibes_import_{entry.lemma}_", delete=False
-                ) as f:
-                    f.write(edit_text)
-                    tmp_path_str = f.name
-                try:
-                    result = subprocess.run([editor_cmd, tmp_path_str])
-                    if result.returncode != 0:
-                        rprint("  [red]Editor exited with an error.[/red]")
+                while True:
+                    with tempfile.NamedTemporaryFile(
+                        mode="w", suffix=".txt", prefix=f"ankivibes_import_{entry.lemma}_", delete=False
+                    ) as f:
+                        f.write(edit_text)
+                        tmp_path_str = f.name
+                    try:
+                        result = subprocess.run([editor_cmd, tmp_path_str])
+                        if result.returncode != 0:
+                            rprint("  [red]Editor exited with an error.[/red]")
+                            break
+                        edited_text = Path(tmp_path_str).read_text(encoding="utf-8")
+                    finally:
+                        Path(tmp_path_str).unlink(missing_ok=True)
+
+                    new_defs = text_to_definitions(edited_text)
+                    new_pos = entry.pos
+                    if new_defs and new_defs[0].get("pos"):
+                        new_pos = new_defs[0]["pos"]
+
+                    preview_entry = replace(entry, definitions=new_defs, pos=new_pos)
+                    console.print(format_import_edit_preview(preview_entry, i, total))
+
+                    while True:
+                        rprint("[dim]  Press key: [/dim]", end="")
+                        preview_choice = click.getchar().lower()
+                        rprint()
+                        if preview_choice in {"a", "r", "d", "q"}:
+                            break
+                        rprint("  [dim]Invalid key. Press a/r/d/q.[/dim]")
+
+                    if preview_choice == "r":
+                        edit_text = edited_text
                         continue
-                    edited_text = Path(tmp_path_str).read_text(encoding="utf-8")
-                finally:
-                    Path(tmp_path_str).unlink(missing_ok=True)
-                new_defs = text_to_definitions(edited_text)
-                entry.definitions = new_defs
-                if new_defs and new_defs[0].get("pos"):
-                    entry.pos = new_defs[0]["pos"]
-                entry.edited = True
-                entry.updated_at = datetime.now(timezone.utc).isoformat()
-                store.save(entry)
-                from ankivibes.anki_bridge import format_card_back
-                candidate.new_back_html = format_card_back(new_defs, entry.pos)
-                candidate.decision = "edit"
-                rprint(f"  [green]Edited[/green] {entry.lemma}")
-                break
+                    if preview_choice == "d":
+                        rprint(f"  [dim]Discarded edit[/dim] for {entry.lemma}")
+                        break
+                    if preview_choice == "q":
+                        ch = "q"
+                        break
+
+                    entry.definitions = new_defs
+                    entry.pos = new_pos
+                    entry.edited = True
+                    entry.updated_at = datetime.now(timezone.utc).isoformat()
+                    store.save(entry)
+                    from ankivibes.anki_bridge import format_card_back
+                    candidate.new_back_html = format_card_back(new_defs, entry.pos)
+                    candidate.decision = "edit"
+                    rprint(f"  [green]Accepted edit[/green] for {entry.lemma}")
+                    break
+
+                if ch == "q" or candidate.decision == "edit":
+                    break
             elif ch == "s":
                 candidate.decision = "skip"
                 skipped_count += 1

@@ -9,6 +9,7 @@ import pytest
 from ankivibes.store.jsonl import JsonlStore
 from ankivibes.store.models import (
     SCHEMA_VERSION,
+    STATUS_ENRICHED,
     STATUS_INSERTED,
     STATUS_READY,
     WordEntry,
@@ -84,12 +85,54 @@ def test_merge_new_entry(tmp_store):
 
 def test_merge_preserves_inserted_status(tmp_store):
     entry = _make_entry()
-    inserted = WordEntry(**{**entry.__dict__, "status": STATUS_INSERTED})
+    inserted = WordEntry(
+        **{
+            **entry.__dict__,
+            "status": STATUS_INSERTED,
+            "anki_note_id": 123,
+            "last_synced_at": "2026-05-20T00:00:00+00:00",
+        }
+    )
     tmp_store.save(inserted)
 
     re_ingested = _make_entry()
     merged = tmp_store.merge(re_ingested)
     assert merged.status == STATUS_INSERTED
+    assert merged.anki_note_id == 123
+    assert merged.last_synced_at == "2026-05-20T00:00:00+00:00"
+
+
+def test_merge_preserves_enriched_entry_on_reingest(tmp_store):
+    entry = _make_entry()
+    enriched = WordEntry(
+        **{
+            **entry.__dict__,
+            "status": STATUS_ENRICHED,
+            "pos": "Verb",
+            "definitions": [{"text": "to run", "examples": []}],
+            "edited": True,
+        }
+    )
+    tmp_store.save(enriched)
+
+    re_ingested = WordEntry(
+        **{
+            **entry.__dict__,
+            "frequency": "0.099",
+            "status": STATUS_READY,
+            "pos": None,
+            "definitions": [],
+            "edited": False,
+        }
+    )
+
+    merged = tmp_store.merge(re_ingested)
+    assert merged.status == STATUS_ENRICHED
+    assert merged.reason is None
+    assert merged.pos == "Verb"
+    assert merged.definitions == [{"text": "to run", "examples": []}]
+    assert merged.edited is True
+    assert merged.frequency == "0.099"
 
 
 def test_merge_updates_frequency_for_non_inserted(tmp_store):

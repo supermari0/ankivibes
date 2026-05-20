@@ -775,6 +775,35 @@ are skipped) means batching is safe — running the command multiple times
 converges to a fully migrated deck. This should be designed and implemented
 before the real import run if the deck is large enough to warrant it.
 
+## Phase 4b.1 — Import Review Feedback ✓
+
+**Goal:** Tighten the real-deck `import-deck` review loop before moving on to
+Phase 4c.
+
+### Feedback from first real-card import
+
+1. **Preview edited merged cards before saving** — when `[e]dit` is selected
+   during import review, the editor result must not auto-save immediately.
+   Instead, show a Rich preview of the merged card back and require an explicit
+   choice:
+   - `[a]` accept edit and save it to the ankivibes store
+   - `[r]` reopen the editor with the current edited text
+   - `[d]` discard the edit and return to the original card decision prompt
+   - `[q]` quit review
+
+2. **Display Anki `<br>` line breaks correctly during import** — old card backs
+   may contain HTML-style line breaks. The import preview and edit reference do
+   not need to preserve the literal HTML, but they should render `<br>` and
+   `<br />` as terminal line breaks so existing card content can be moved into
+   ankivibes style cleanly.
+
+### Verifiable
+
+```sh
+uv run pytest tests/test_anki_import.py
+uv run ankivibes import-deck
+```
+
 ---
 
 ## Phase 4c — Sync & Drift Reconciliation
@@ -1064,4 +1093,3 @@ The following concepts from frelanki are worth keeping, cleaned up:
 | argparse CLI | Typer CLI | Rewrite; same subcommands, better UX |
 | `merge_entry` logic | keep | This merge-on-re-ingest pattern is correct |
 | Stable ID (`sha256[:16]`) | keep | Deterministic IDs without a DB are clever; keep the pattern |
-

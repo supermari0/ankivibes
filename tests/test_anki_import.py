@@ -12,6 +12,7 @@ from ankivibes.anki_import import (
     ImportCandidate,
     build_import_candidates,
     format_edit_with_reference,
+    format_import_edit_preview,
     format_import_preview,
     strip_html,
 )
@@ -75,6 +76,12 @@ class TestStripHtml:
 
     def test_strips_whitespace(self) -> None:
         assert strip_html("  correr  ") == "correr"
+
+    def test_preserves_br_as_line_break(self) -> None:
+        assert strip_html("first<br>second<br />third") == "first\nsecond\nthird"
+
+    def test_decodes_html_entities(self) -> None:
+        assert strip_html("Tom &amp; Jerry") == "Tom & Jerry"
 
 
 # -- build_import_candidates --------------------------------------------------
@@ -166,6 +173,37 @@ class TestFormatImportPreview:
         panel = format_import_preview(candidate, 1, 10)
         text = panel.renderable.plain  # type: ignore[union-attr]
         assert "2 cards share this front" in text
+
+    def test_existing_back_displays_br_line_breaks(self) -> None:
+        entry = _make_entry("correr", status=STATUS_ENRICHED)
+        entry.definitions = [{"text": "to run", "examples": []}]
+        candidate = ImportCandidate(
+            entry=entry,
+            notes=[_make_note(1, "correr", "line one<br>line two")],
+        )
+
+        panel = format_import_preview(candidate, 1, 10)
+        text = panel.renderable.plain  # type: ignore[union-attr]
+        assert "  line one\n  line two" in text
+
+
+# -- format_import_edit_preview ----------------------------------------------
+
+
+class TestFormatImportEditPreview:
+    def test_shows_merged_preview_and_confirmation_options(self) -> None:
+        entry = _make_entry("correr", status=STATUS_ENRICHED)
+        entry.definitions = [{"text": "to run", "examples": [{"text": "Corro.", "translation": "I run."}]}]
+        entry.pos = "Verb"
+
+        panel = format_import_edit_preview(entry, 2, 10)
+        text = panel.renderable.plain  # type: ignore[union-attr]
+        assert "MERGED CARD BACK PREVIEW" in text
+        assert "to run" in text
+        assert "→ I run." in text
+        assert "[a] accept edit" in text
+        assert "[r] reopen editor" in text
+        assert "[d] discard edit" in text
 
 
 # -- format_edit_with_reference -----------------------------------------------
